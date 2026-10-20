@@ -48,8 +48,8 @@
     Délai d'attente de la fenêtre Windows « Enregistrer sous » après le clic.
 
 .PARAMETER LogPath
-    Fichier journal. Par défaut : dossier Logs à côté du script (ou %TEMP% si
-    impossible), un fichier par exécution.
+    Fichier journal. Par défaut : dossier Logs à côté du script (ou dossier TEMP de
+    l'utilisateur si impossible), un fichier par exécution.
 
 .PARAMETER CloseDialog
     Ferme la fenêtre « Enregistrer sous » après vérification (équivaut à « Annuler » :
@@ -89,6 +89,14 @@
     - Fichier enregistré en UTF-8 avec BOM ; les libellés accentués sont en plus construits
       avec [char] pour fonctionner même si le fichier est réenregistré dans un autre encodage.
     - Compatible Windows PowerShell 5.1 et PowerShell 7.
+    - Power Automate Desktop (action « Exécuter un script PowerShell ») : le script ne contient
+      volontairement aucun signe pourcent, que PAD interprète comme une variable. Pour passer
+      une variable PAD, remplacer une valeur par défaut ci-dessous par le nom de la variable
+      PAD entouré de signes pourcent, entre apostrophes. -RunHidden est inutile dans PAD
+      (PowerShell y tourne déjà sans fenêtre).
+    - Quand la sortie est redirigée (PAD, « Exécuter la commande DOS »...), le détail va
+      seulement dans le journal : la sortie standard contient uniquement le code de sortie
+      et, en cas d'échec, le message d'erreur est écrit sur la sortie d'erreur.
 #>
 [CmdletBinding()]
 param(
@@ -118,6 +126,8 @@ $script:BoundParams = $PSBoundParameters
 $script:ScriptPath = $PSCommandPath
 $script:MinimizedHandle = [IntPtr]::Zero
 $script:DialogLeftOpen = $false
+# Sortie redirigée (Power Automate Desktop...) : pas d'écho console, seul le code est renvoyé.
+$script:QuietConsole = ($Host.Name -eq 'ConsoleHost') -and [Console]::IsOutputRedirected
 
 # =============================================================================
 # Journal et gestion des erreurs
@@ -129,7 +139,7 @@ function Initialize-Log {
         $dir = if ($script:ScriptPath) { Join-Path (Split-Path -Parent $script:ScriptPath) 'Logs' } else { Join-Path $env:TEMP 'EdgeSaveAsCheck' }
         $Path = Join-Path $dir ('EdgeSaveAsCheck_{0:yyyyMMdd_HHmmss}.log' -f $script:StartTime)
     }
-    # Si le dossier demandé n'est pas accessible en écriture, repli sur %TEMP%.
+    # Si le dossier demandé n'est pas accessible en écriture, repli sur le dossier TEMP.
     foreach ($candidate in @($Path, (Join-Path $env:TEMP (Split-Path -Leaf $Path)))) {
         try {
             $dir = Split-Path -Parent $candidate
@@ -153,7 +163,7 @@ function Write-Log {
     if ($script:LogFile) {
         try { Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8 } catch { }
     }
-    Write-Host $line
+    if (-not $script:QuietConsole) { Write-Host $line }
 }
 
 # Interrompt le traitement avec un code de sortie précis (intercepté par le catch final).
@@ -749,6 +759,7 @@ catch {
     $script:ResultText = $_.Exception.Message
     Write-Log $_.Exception.Message 'ERREUR'
     if ($script:ExitCode -eq 1) { Write-Log ('Detail : {0}' -f $_.ScriptStackTrace) 'ERREUR' }
+    if ($script:QuietConsole) { [Console]::Error.WriteLine($_.Exception.Message) }
 }
 finally {
     # Fenêtre Edge réduite au départ : on la réduit à nouveau, sauf si le dialogue reste ouvert.
@@ -759,4 +770,5 @@ finally {
     $level = if ($script:ExitCode -eq 0) { 'OK' } else { 'ERREUR' }
     Write-Log ('RESULTAT : code {0} - {1} - duree {2:N1} s' -f $script:ExitCode, $script:ResultText, $elapsed) $level
 }
+if ($script:QuietConsole) { Write-Output $script:ExitCode }
 exit $script:ExitCode
