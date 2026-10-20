@@ -273,6 +273,13 @@ namespace EdgeSaveAsCheck
         public bool Visible;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
     public static class Win32
     {
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
@@ -288,6 +295,9 @@ namespace EdgeSaveAsCheck
         [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmdShow);
         [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        // Default action (click) through MSAA accessibility, without moving the mouse.
+        [DllImport("oleacc.dll")] public static extern int AccessibleObjectFromPoint(POINT pt, [MarshalAs(UnmanagedType.IUnknown)] out object acc, [MarshalAs(UnmanagedType.Struct)] out object child);
 
         private const uint GW_OWNER = 4;
 
@@ -439,12 +449,10 @@ function Invoke-UiaElement {
         @{ Name = 'Toggle'; Pattern = [System.Windows.Automation.TogglePattern]::Pattern; Action = { param($p) $p.Toggle() } },
         @{ Name = 'Expand'; Pattern = [System.Windows.Automation.ExpandCollapsePattern]::Pattern; Action = { param($p) $p.Expand() } }
     )
-    $available = $false
     $lastError = $null
     foreach ($attempt in $attempts) {
         $pattern = $null
         if (-not $Element.TryGetCurrentPattern($attempt.Pattern, [ref]$pattern)) { continue }
-        $available = $true
         try { & $attempt.Action $pattern; return $attempt.Name }
         catch {
             $lastError = $_
@@ -458,10 +466,39 @@ function Invoke-UiaElement {
             Write-Log ("Action '{0}' en echec, essai suivant : {1}" -f $attempt.Name, $_.Exception.Message) 'WARN'
         }
     }
-    if (-not $available) {
-        throw ("Aucune action UI Automation disponible sur '{0}'." -f (Get-ElementName $Element))
+    # Dernier recours : action par défaut via l'accessibilité (MSAA) au centre de l'élément.
+    # Certaines versions d'Edge n'exposent qu'Expand sur le bouton Telechargements, et Expand
+    # renvoie E_FAIL ; accDoDefaultAction clique le bouton sans bouger la souris.
+    try { return (Invoke-DefaultActionAtPoint $Element) }
+    catch {
+        $detail = if ($lastError) { $lastError.Exception.Message } else { 'aucun pattern utilisable' }
+        throw ("Aucune action n'a abouti sur '{0}' : {1} / clic accessibilite : {2}" -f (Get-ElementName $Element), $detail, $_.Exception.Message)
     }
-    throw ("Aucune action UI Automation n'a abouti sur '{0}' : {1}" -f (Get-ElementName $Element), $lastError.Exception.Message)
+}
+
+# Clique l'élément via son action par défaut MSAA, sans déplacer le curseur. On vise le point
+# cliquable calculé par UI Automation (ou, à défaut, le centre du rectangle de l'élément).
+function Invoke-DefaultActionAtPoint {
+    param($Element)
+    $x = $null; $y = $null
+    try {
+        $point = $Element.GetClickablePoint()
+        $x = [int]$point.X; $y = [int]$point.Y
+    }
+    catch {
+        $rect = $Element.Current.BoundingRectangle
+        if ([double]::IsInfinity($rect.Width) -or $rect.Width -le 0 -or $rect.Height -le 0) {
+            throw "element sans point cliquable"
+        }
+        $x = [int]($rect.X + $rect.Width / 2); $y = [int]($rect.Y + $rect.Height / 2)
+    }
+    $pt = New-Object EdgeSaveAsCheck.POINT
+    $pt.X = $x; $pt.Y = $y
+    $acc = $null; $child = $null
+    $hr = [EdgeSaveAsCheck.Win32]::AccessibleObjectFromPoint($pt, [ref]$acc, [ref]$child)
+    if ($hr -ne 0 -or $null -eq $acc) { throw ("AccessibleObjectFromPoint a echoue (HRESULT 0x{0:X8}) au point {1},{2}" -f $hr, $x, $y) }
+    $acc.accDoDefaultAction($child)
+    return 'accDoDefaultAction'
 }
 
 # =============================================================================
