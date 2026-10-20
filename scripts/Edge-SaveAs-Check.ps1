@@ -427,19 +427,31 @@ function Find-NamedElements {
     return $found.ToArray()
 }
 
+# Actionne l'élément. Selon la version d'Edge, le même bouton n'expose pas les mêmes
+# actions, et certaines renvoient E_FAIL ; on les essaie donc dans l'ordre, chacune dans
+# son try/catch, jusqu'à la première qui réussit. DoDefaultAction (LegacyIAccessible) est
+# l'équivalent fiable du clic sur un bouton Chromium quand Invoke n'est pas exposé.
 function Invoke-UiaElement {
     param($Element)
-    $pattern = $null
-    if ($Element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
-        $pattern.Invoke(); return 'Invoke'
+    $attempts = @(
+        @{ Name = 'Invoke'; Pattern = [System.Windows.Automation.InvokePattern]::Pattern; Action = { param($p) $p.Invoke() } },
+        @{ Name = 'DoDefaultAction'; Pattern = [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern; Action = { param($p) $p.DoDefaultAction() } },
+        @{ Name = 'Toggle'; Pattern = [System.Windows.Automation.TogglePattern]::Pattern; Action = { param($p) $p.Toggle() } },
+        @{ Name = 'Expand'; Pattern = [System.Windows.Automation.ExpandCollapsePattern]::Pattern; Action = { param($p) $p.Expand() } }
+    )
+    $available = $false
+    $lastError = $null
+    foreach ($attempt in $attempts) {
+        $pattern = $null
+        if (-not $Element.TryGetCurrentPattern($attempt.Pattern, [ref]$pattern)) { continue }
+        $available = $true
+        try { & $attempt.Action $pattern; return $attempt.Name }
+        catch { $lastError = $_; Write-Log ("Action '{0}' en echec, essai suivant : {1}" -f $attempt.Name, $_.Exception.Message) 'WARN' }
     }
-    if ($Element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
-        $pattern.Toggle(); return 'Toggle'
+    if (-not $available) {
+        throw ("Aucune action UI Automation disponible sur '{0}'." -f (Get-ElementName $Element))
     }
-    if ($Element.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
-        $pattern.Expand(); return 'Expand'
-    }
-    throw ("Aucune action UI Automation disponible sur '{0}'." -f (Get-ElementName $Element))
+    throw ("Aucune action UI Automation n'a abouti sur '{0}' : {1}" -f (Get-ElementName $Element), $lastError.Exception.Message)
 }
 
 # =============================================================================
