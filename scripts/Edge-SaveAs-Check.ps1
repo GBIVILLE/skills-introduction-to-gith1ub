@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Repère une page Edge (URL + titre), ouvre le panneau Téléchargements, clique sur
@@ -89,15 +89,15 @@
     - Doit tourner dans la session de l'utilisateur connecté (pas en SYSTEM ni en
       « Exécuter même si l'utilisateur n'est pas connecté ») : UI Automation ne voit que
       le bureau de la session courante.
-    - Fichier enregistré en UTF-8 avec BOM ; les libellés accentués sont en plus construits
-      avec [char] pour fonctionner même si le fichier est réenregistré dans un autre encodage.
+    - Fichier en UTF-8 sans BOM : un BOM copié depuis GitHub se retrouve devant #Requires et
+      empêche l'analyse du script. Les accents ne figurent que dans les commentaires (les
+      libellés accentués sont construits avec [char]) : le script marche quel que soit l'encodage.
     - Compatible Windows PowerShell 5.1 et PowerShell 7.
     - Power Automate Desktop : coller le lanceur Edge-SaveAs-Check.PAD.ps1 dans l'action
-      « Exécuter un script PowerShell » ; il exécute ce fichier en mémoire avec les variables
-      PAD. Coller ce script entier dans l'action est déconseillé : PAD le passe en argument à
-      powershell.exe et sa taille risque de dépasser la limite d'une ligne de commande Windows.
-      Le script ne contient aucun signe pourcent (PAD l'interpréterait comme une variable).
-      -RunHidden est inutile dans PAD, qui exécute déjà PowerShell sans fenêtre.
+      « Exécuter un script PowerShell » ; il exécute ce fichier avec les variables PAD (même
+      avec des apostrophes) et le script reste à un seul endroit. Le script ne contient aucun
+      signe pourcent (PAD l'interpréterait comme une variable). -RunHidden est inutile dans
+      PAD, qui exécute déjà PowerShell sans fenêtre.
     - Quand la sortie est redirigée (PAD, « Exécuter la commande DOS »...), le détail va
       seulement dans le journal : la sortie standard contient uniquement le code de sortie
       et, en cas d'échec, le message d'erreur est écrit sur la sortie d'erreur.

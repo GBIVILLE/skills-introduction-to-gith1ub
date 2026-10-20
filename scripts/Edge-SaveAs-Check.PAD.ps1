@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # Lanceur Power Automate Desktop pour Edge-SaveAs-Check.ps1
 #
 # À coller tel quel dans l'action « Exécuter un script PowerShell ».
@@ -10,7 +10,7 @@
 #    Codes 1 à 9 : voir Edge-SaveAs-Check.ps1. Codes du lanceur :
 #      10 script introuvable (ScriptError liste les fichiers Edge-SaveAs-Check* du dossier)
 #      11 script trouvé mais illisible (droits, fichier verrouillé)
-#      12 script invalide ou abîmé (vérifier son empreinte SHA-256)
+#      12 script invalide ou abîmé (vérifier son empreinte SHA-256 ; ScriptError donne la ligne)
 #  - Aucun signe pourcent ne doit apparaître ici, sauf autour des variables PAD.
 # =============================================================================
 
@@ -54,7 +54,8 @@ if (-not $resolvedPath) {
 
 # Exécution en mémoire : ni la stratégie d'exécution ni le marquage « fichier venant
 # d'Internet » ne bloquent le script.
-try { $code = [System.IO.File]::ReadAllText($resolvedPath) }
+# TrimStart : un BOM copié depuis GitHub devant #Requires empêcherait l'analyse du script.
+try { $code = [System.IO.File]::ReadAllText($resolvedPath).TrimStart([char]0xFEFF) }
 catch { Stop-Launcher 11 ('Script illisible : {0} - {1}' -f $resolvedPath, $_.Exception.Message) }
 
 try { $scriptBlock = [scriptblock]::Create($code) }
