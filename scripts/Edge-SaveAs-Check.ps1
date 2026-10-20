@@ -428,14 +428,14 @@ function Find-NamedElements {
 }
 
 # Actionne l'élément. Selon la version d'Edge, le même bouton n'expose pas les mêmes
-# actions, et certaines renvoient E_FAIL ; on les essaie donc dans l'ordre, chacune dans
-# son try/catch, jusqu'à la première qui réussit. DoDefaultAction (LegacyIAccessible) est
-# l'équivalent fiable du clic sur un bouton Chromium quand Invoke n'est pas exposé.
+# actions, et Expand peut renvoyer E_FAIL (notamment sur un bouton désactivé) ; on essaie
+# donc chaque action disponible dans son propre try/catch, jusqu'à la première qui aboutit.
+# Tout reste en UI Automation managé (pas de type COM comme LegacyIAccessiblePattern, absent
+# de l'assembly .NET utilisé par Windows PowerShell 5.1).
 function Invoke-UiaElement {
     param($Element)
     $attempts = @(
         @{ Name = 'Invoke'; Pattern = [System.Windows.Automation.InvokePattern]::Pattern; Action = { param($p) $p.Invoke() } },
-        @{ Name = 'DoDefaultAction'; Pattern = [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern; Action = { param($p) $p.DoDefaultAction() } },
         @{ Name = 'Toggle'; Pattern = [System.Windows.Automation.TogglePattern]::Pattern; Action = { param($p) $p.Toggle() } },
         @{ Name = 'Expand'; Pattern = [System.Windows.Automation.ExpandCollapsePattern]::Pattern; Action = { param($p) $p.Expand() } }
     )
@@ -446,7 +446,17 @@ function Invoke-UiaElement {
         if (-not $Element.TryGetCurrentPattern($attempt.Pattern, [ref]$pattern)) { continue }
         $available = $true
         try { & $attempt.Action $pattern; return $attempt.Name }
-        catch { $lastError = $_; Write-Log ("Action '{0}' en echec, essai suivant : {1}" -f $attempt.Name, $_.Exception.Message) 'WARN' }
+        catch {
+            $lastError = $_
+            # Expand renvoie parfois E_FAIL tout en ayant ouvert le panneau : on vérifie l'état.
+            if ($attempt.Name -eq 'Expand') {
+                try {
+                    if ($pattern.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded) { return 'Expand' }
+                }
+                catch { }
+            }
+            Write-Log ("Action '{0}' en echec, essai suivant : {1}" -f $attempt.Name, $_.Exception.Message) 'WARN'
+        }
     }
     if (-not $available) {
         throw ("Aucune action UI Automation disponible sur '{0}'." -f (Get-ElementName $Element))
@@ -620,6 +630,13 @@ function Open-DownloadsPanel {
     param($Page)
     $buttons = @(Find-NamedElements -Roots @($Page.Window) -Condition $script:CondClickable -NamePatterns $DownloadsButtonNames -PreferBrowserUi)
     if ($buttons.Count -eq 0) { return $false }
+    # Sans téléchargement en cours, le bouton est souvent désactivé et Expand renvoie E_FAIL.
+    try {
+        if (-not [bool]$buttons[0].Current.IsEnabled) {
+            Write-Log "Bouton Telechargements desactive (aucun telechargement dans cette fenetre Edge ?) : le panneau ne peut pas s'ouvrir par ce bouton." 'WARN'
+        }
+    }
+    catch { }
     $action = Invoke-UiaElement $buttons[0]
     Write-Log ("Bouton '{0}' actionne ({1}) : ouverture du panneau Telechargements" -f (Get-ElementName $buttons[0]), $action)
     return $true
