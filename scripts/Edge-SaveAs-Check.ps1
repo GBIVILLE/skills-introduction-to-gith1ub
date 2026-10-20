@@ -29,6 +29,8 @@
       5  bouton « Enregistrer sous » introuvable dans le panneau
       6  la fenêtre Windows « Enregistrer sous » ne s'est pas ouverte
       7  -RunHidden utilisé alors que le script n'est pas lancé depuis un fichier .ps1
+      8  PowerShell en mode linguistique restreint (stratégie de sécurité) : script inutilisable
+      9  paramètre obligatoire vide (UrlPattern ou TitlePattern, ex. variable PAD vide)
 
 .PARAMETER UrlPattern
     URL de la page, jokers acceptés (opérateur -like). Si Edge masque « https:// » ou
@@ -48,8 +50,9 @@
     Délai d'attente de la fenêtre Windows « Enregistrer sous » après le clic.
 
 .PARAMETER LogPath
-    Fichier journal. Par défaut : dossier Logs à côté du script (ou dossier TEMP de
-    l'utilisateur si impossible), un fichier par exécution.
+    Fichier journal, ou dossier dans lequel un fichier est créé à chaque exécution.
+    Par défaut : dossier Logs à côté du script, ou dossier TEMP\EdgeSaveAsCheck si le script
+    n'est pas lancé depuis un fichier (lanceur PAD) ou si le dossier est en lecture seule.
 
 .PARAMETER CloseDialog
     Ferme la fenêtre « Enregistrer sous » après vérification (équivaut à « Annuler » :
@@ -89,11 +92,12 @@
     - Fichier enregistré en UTF-8 avec BOM ; les libellés accentués sont en plus construits
       avec [char] pour fonctionner même si le fichier est réenregistré dans un autre encodage.
     - Compatible Windows PowerShell 5.1 et PowerShell 7.
-    - Power Automate Desktop (action « Exécuter un script PowerShell ») : le script ne contient
-      volontairement aucun signe pourcent, que PAD interprète comme une variable. Pour passer
-      une variable PAD, remplacer une valeur par défaut ci-dessous par le nom de la variable
-      PAD entouré de signes pourcent, entre apostrophes. -RunHidden est inutile dans PAD
-      (PowerShell y tourne déjà sans fenêtre).
+    - Power Automate Desktop : coller le lanceur Edge-SaveAs-Check.PAD.ps1 dans l'action
+      « Exécuter un script PowerShell » ; il exécute ce fichier en mémoire avec les variables
+      PAD. Coller ce script entier dans l'action est déconseillé : PAD le passe en argument à
+      powershell.exe et sa taille risque de dépasser la limite d'une ligne de commande Windows.
+      Le script ne contient aucun signe pourcent (PAD l'interpréterait comme une variable).
+      -RunHidden est inutile dans PAD, qui exécute déjà PowerShell sans fenêtre.
     - Quand la sortie est redirigée (PAD, « Exécuter la commande DOS »...), le détail va
       seulement dans le journal : la sortie standard contient uniquement le code de sortie
       et, en cas d'échec, le message d'erreur est écrit sur la sortie d'erreur.
@@ -116,6 +120,14 @@ param(
     [string[]]$SaveDialogTitles = @('Enregistrer sous*', 'Save As*')
 )
 
+# Mode linguistique restreint (AppLocker / WDAC) : Add-Type et UI Automation y sont interdits.
+# Vérifié avant tout appel .NET, qui échouerait avec un message moins clair.
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    Write-Output 8
+    Write-Error -ErrorAction Continue ('PowerShell est en mode {0} (strategie de securite) : Add-Type et UI Automation sont bloques, le script ne peut pas fonctionner.' -f $ExecutionContext.SessionState.LanguageMode)
+    exit 8
+}
+
 $ErrorActionPreference = 'Stop'
 
 $script:StartTime = Get-Date
@@ -136,8 +148,11 @@ $script:QuietConsole = ($Host.Name -eq 'ConsoleHost') -and [Console]::IsOutputRe
 function Initialize-Log {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) {
-        $dir = if ($script:ScriptPath) { Join-Path (Split-Path -Parent $script:ScriptPath) 'Logs' } else { Join-Path $env:TEMP 'EdgeSaveAsCheck' }
-        $Path = Join-Path $dir ('EdgeSaveAsCheck_{0:yyyyMMdd_HHmmss}.log' -f $script:StartTime)
+        $Path = if ($script:ScriptPath) { Join-Path (Split-Path -Parent $script:ScriptPath) 'Logs' } else { Join-Path $env:TEMP 'EdgeSaveAsCheck' }
+    }
+    # Un dossier (existant, ou chemin sans extension) reçoit un fichier par exécution.
+    if ((Test-Path -LiteralPath $Path -PathType Container) -or -not [System.IO.Path]::HasExtension($Path)) {
+        $Path = Join-Path $Path ('EdgeSaveAsCheck_{0:yyyyMMdd_HHmmss}.log' -f $script:StartTime)
     }
     # Si le dossier demandé n'est pas accessible en écriture, repli sur le dossier TEMP.
     foreach ($candidate in @($Path, (Join-Path $env:TEMP (Split-Path -Leaf $Path)))) {
@@ -743,7 +758,16 @@ function Invoke-EdgeSaveAsCheck {
 try {
     $script:LogFile = Initialize-Log -Path $LogPath
     Write-Log ('Demarrage - PID {0}, PowerShell {1}, utilisateur {2}, journal : {3}' -f $PID, $PSVersionTable.PSVersion, $env:USERNAME, $script:LogFile)
+
+    # Valeurs venant de PAD : espaces ou retours à la ligne parasites, variable vide.
+    $UrlPattern = $UrlPattern.Trim()
+    $TitlePattern = $TitlePattern.Trim()
+    $FileNamePattern = $FileNamePattern.Trim()
+    if (-not $FileNamePattern) { $FileNamePattern = '*' }
     Write-Log ("Parametres - URL '{0}' | Titre '{1}' | Fichier '{2}' | CloseDialog {3}" -f $UrlPattern, $TitlePattern, $FileNamePattern, [bool]$CloseDialog)
+    if (-not $UrlPattern -or -not $TitlePattern) {
+        Stop-Check 9 'UrlPattern et TitlePattern ne doivent pas etre vides (variable PAD vide ?).'
+    }
 
     if ($RunHidden) {
         Start-HiddenInstance
