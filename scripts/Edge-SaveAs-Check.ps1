@@ -5,9 +5,10 @@
     « Enregistrer sous » et vérifie que la fenêtre Windows d'enregistrement s'ouvre.
 
 .DESCRIPTION
-    Fonctionne en arrière-plan : tout passe par UI Automation (InvokePattern,
-    SelectionItemPattern...). Aucun clic souris, aucune frappe clavier, Edge n'est pas
-    mis au premier plan : l'utilisateur peut continuer à travailler pendant l'exécution.
+    Fonctionne en arrière-plan : UI Automation, accessibilité MSAA et messages Windows postés
+    directement aux fenêtres d'Edge. Le curseur ne bouge pas, aucune frappe n'est envoyée au
+    clavier, Edge n'est pas mis au premier plan : l'utilisateur peut continuer à travailler
+    (seul -AllowRealMouse, désactivé par défaut, déplace brièvement le curseur).
 
     Étapes :
       1. Recherche, dans les fenêtres Edge, de l'onglet dont le titre correspond à
@@ -15,9 +16,12 @@
          sélectionné (sans activer la fenêtre).
       2. Ouverture du panneau Téléchargements de cette fenêtre via le bouton de la barre
          d'outils (sauf si l'invite « Que voulez-vous faire avec ... ? » est déjà visible).
-      3. Clic sur le bouton « Enregistrer sous » de l'invite de téléchargement.
-      4. Attente d'une nouvelle boîte de dialogue Windows (classe #32770)
-         « Enregistrer sous » appartenant à Edge.
+      3. Clic sur le bouton « Enregistrer sous » de l'invite de téléchargement. Le panneau
+         d'Edge est une page web qui peut ignorer le clic simulé d'UI Automation : les
+         méthodes sont essayées l'une après l'autre (Invoke, accDoDefaultAction, message
+         souris natif, touche Entrée) jusqu'à l'ouverture de la fenêtre ; le journal indique
+         laquelle a fonctionné.
+      4. Attente d'une NOUVELLE fenêtre Windows « Enregistrer sous » (absente avant le clic).
 
     Le journal est ouvert dès le début du script et se termine toujours par une ligne
     « RESULTAT ». Codes de sortie :
@@ -47,7 +51,15 @@
     Délai d'attente du bouton « Enregistrer sous » après ouverture du panneau.
 
 .PARAMETER DialogTimeoutSeconds
-    Délai d'attente de la fenêtre Windows « Enregistrer sous » après le clic.
+    Délai final d'attente de la fenêtre Windows « Enregistrer sous » quand aucune méthode de
+    clic n'a produit de fenêtre.
+
+.PARAMETER ClickWaitSeconds
+    Délai d'attente de la fenêtre après chaque méthode de clic, avant d'essayer la suivante.
+
+.PARAMETER AllowRealMouse
+    Ajoute en dernier recours un vrai clic souris (le curseur se déplace un instant) : à
+    n'utiliser que si les méthodes d'arrière-plan échouent. Le panneau doit être visible.
 
 .PARAMETER LogPath
     Fichier journal, ou dossier dans lequel un fichier est créé à chaque exécution.
@@ -111,8 +123,10 @@ param(
     # ---------------------------------------------------------------------------
     [ValidateRange(1, 300)][int]$TimeoutSeconds = 20,
     [ValidateRange(1, 300)][int]$DialogTimeoutSeconds = 15,
+    [ValidateRange(1, 60)][int]$ClickWaitSeconds = 3,
     [string]$LogPath = '',
     [switch]$CloseDialog,
+    [switch]$AllowRealMouse,
     [switch]$RunHidden,
     [string[]]$DownloadsButtonNames = @(('T{0}l{0}chargements*' -f [char]0xE9), 'Downloads*'),
     [string[]]$SaveAsButtonNames = @('Enregistrer sous', 'Save as'),
@@ -299,7 +313,109 @@ namespace EdgeSaveAsCheck
         // Default action (click) through MSAA accessibility, without moving the mouse.
         [DllImport("oleacc.dll")] public static extern int AccessibleObjectFromPoint(POINT pt, [MarshalAs(UnmanagedType.IUnknown)] out object acc, [MarshalAs(UnmanagedType.Struct)] out object child);
 
+        [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(POINT pt);
+        [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+        [DllImport("user32.dll")] private static extern bool ScreenToClient(IntPtr hWnd, ref POINT pt);
+        [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+        [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
+        [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint code, uint mapType);
+        [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+        [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT pt);
+        [DllImport("user32.dll")] private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+
         private const uint GW_OWNER = 4;
+        private const uint GA_ROOT = 2;
+
+        // Screen coordinates must be physical pixels to match the target window, so the
+        // process is made DPI aware (a no-op if the host already chose a mode).
+        public static string EnableDpiAwareness()
+        {
+            try { if (SetProcessDpiAwarenessContext(new IntPtr(-4))) { return "per-monitor v2"; } }
+            catch (EntryPointNotFoundException) { }
+            try { if (SetProcessDPIAware()) { return "system"; } }
+            catch (EntryPointNotFoundException) { }
+            return "unchanged";
+        }
+
+        public static uint DpiOf(IntPtr hWnd)
+        {
+            try { return GetDpiForWindow(hWnd); }
+            catch (EntryPointNotFoundException) { return 0; }
+        }
+
+        public static string ClassOf(IntPtr hWnd)
+        {
+            StringBuilder name = new StringBuilder(256);
+            GetClassName(hWnd, name, name.Capacity);
+            return name.ToString();
+        }
+
+        public static IntPtr WindowAt(int x, int y)
+        {
+            POINT p;
+            p.X = x;
+            p.Y = y;
+            return WindowFromPoint(p);
+        }
+
+        public static IntPtr RootOf(IntPtr hWnd)
+        {
+            return GetAncestor(hWnd, GA_ROOT);
+        }
+
+        public static POINT ToClient(IntPtr hWnd, int x, int y)
+        {
+            POINT p;
+            p.X = x;
+            p.Y = y;
+            ScreenToClient(hWnd, ref p);
+            return p;
+        }
+
+        public static IntPtr MakeLParam(int x, int y)
+        {
+            return new IntPtr((y << 16) | (x & 0xFFFF));
+        }
+
+        // Native mouse messages posted to the window: they reach Chromium as real input
+        // (trusted events), unlike the simulated click of an accessibility action, and
+        // they need neither focus nor the foreground window.
+        public static void PostClick(IntPtr hWnd, int x, int y)
+        {
+            IntPtr lp = MakeLParam(x, y);
+            PostMessage(hWnd, 0x0200, IntPtr.Zero, lp);          // WM_MOUSEMOVE
+            System.Threading.Thread.Sleep(80);
+            PostMessage(hWnd, 0x0201, new IntPtr(1), lp);        // WM_LBUTTONDOWN, MK_LBUTTON
+            System.Threading.Thread.Sleep(60);
+            PostMessage(hWnd, 0x0202, IntPtr.Zero, lp);          // WM_LBUTTONUP
+        }
+
+        // Native key press posted to the window (Enter activates the focused button).
+        public static void PostKey(IntPtr hWnd, int vk, int ch)
+        {
+            uint scan = MapVirtualKey((uint)vk, 0);
+            uint down = 1u | (scan << 16);
+            uint up = down | (1u << 30) | (1u << 31);
+            PostMessage(hWnd, 0x0100, new IntPtr(vk), new IntPtr(unchecked((int)down)));   // WM_KEYDOWN
+            PostMessage(hWnd, 0x0102, new IntPtr(ch), new IntPtr(unchecked((int)down)));   // WM_CHAR
+            System.Threading.Thread.Sleep(50);
+            PostMessage(hWnd, 0x0101, new IntPtr(vk), new IntPtr(unchecked((int)up)));     // WM_KEYUP
+        }
+
+        // Last resort, opt-in: a real mouse click. It moves the cursor, so it is not background.
+        public static void RealClick(int x, int y)
+        {
+            POINT old;
+            GetCursorPos(out old);
+            SetCursorPos(x, y);
+            System.Threading.Thread.Sleep(80);
+            mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);          // MOUSEEVENTF_LEFTDOWN
+            System.Threading.Thread.Sleep(60);
+            mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);          // MOUSEEVENTF_LEFTUP
+            System.Threading.Thread.Sleep(80);
+            SetCursorPos(old.X, old.Y);
+        }
 
         public static List<WindowInfo> GetTopLevelWindows()
         {
@@ -342,17 +458,6 @@ function Get-EdgeBrowserWindows {
         if ($window.Owner -ne [IntPtr]::Zero -or [string]::IsNullOrEmpty($window.Title)) { continue }
         if ($edgePids -notcontains [int]$window.ProcessId) { continue }
         try { [System.Windows.Automation.AutomationElement]::FromHandle($window.Handle) } catch { }
-    }
-}
-
-# Boîtes de dialogue Windows (#32770) liées à Edge : processus msedge (le dialogue peut
-# venir d'un processus utilitaire créé au moment du clic) ou fenêtre Edge propriétaire.
-function Get-EdgeDialogWindows {
-    param([IntPtr]$OwnerHandle)
-    $edgePids = Get-EdgeProcessIds
-    foreach ($window in [EdgeSaveAsCheck.Win32]::GetTopLevelWindows()) {
-        if ($window.ClassName -ne '#32770' -or -not $window.Visible) { continue }
-        if (($edgePids -contains [int]$window.ProcessId) -or ($window.Owner -eq $OwnerHandle)) { $window }
     }
 }
 
@@ -480,25 +585,103 @@ function Invoke-UiaElement {
 # cliquable calculé par UI Automation (ou, à défaut, le centre du rectangle de l'élément).
 function Invoke-DefaultActionAtPoint {
     param($Element)
-    $x = $null; $y = $null
+    $point = Get-ElementScreenPoint $Element
+    $pt = New-Object EdgeSaveAsCheck.POINT
+    $pt.X = $point.X; $pt.Y = $point.Y
+    $acc = $null; $child = $null
+    $hr = [EdgeSaveAsCheck.Win32]::AccessibleObjectFromPoint($pt, [ref]$acc, [ref]$child)
+    if ($hr -ne 0 -or $null -eq $acc) { throw ("AccessibleObjectFromPoint a echoue (HRESULT 0x{0:X8}) au point {1},{2}" -f $hr, $point.X, $point.Y) }
+    $acc.accDoDefaultAction($child)
+    return 'accDoDefaultAction'
+}
+
+# Point d'écran (pixels physiques, le processus étant DPI aware) où cliquer l'élément :
+# point cliquable d'UI Automation, ou à défaut centre de son rectangle.
+function Get-ElementScreenPoint {
+    param($Element)
     try {
         $point = $Element.GetClickablePoint()
-        $x = [int]$point.X; $y = [int]$point.Y
+        return [pscustomobject]@{ X = [int]$point.X; Y = [int]$point.Y }
     }
     catch {
         $rect = $Element.Current.BoundingRectangle
         if ([double]::IsInfinity($rect.Width) -or $rect.Width -le 0 -or $rect.Height -le 0) {
-            throw "element sans point cliquable"
+            throw 'element sans point cliquable (hors ecran ou masque)'
         }
-        $x = [int]($rect.X + $rect.Width / 2); $y = [int]($rect.Y + $rect.Height / 2)
+        return [pscustomobject]@{ X = [int]($rect.X + $rect.Width / 2); Y = [int]($rect.Y + $rect.Height / 2) }
     }
-    $pt = New-Object EdgeSaveAsCheck.POINT
-    $pt.X = $x; $pt.Y = $y
-    $acc = $null; $child = $null
-    $hr = [EdgeSaveAsCheck.Win32]::AccessibleObjectFromPoint($pt, [ref]$acc, [ref]$child)
-    if ($hr -ne 0 -or $null -eq $acc) { throw ("AccessibleObjectFromPoint a echoue (HRESULT 0x{0:X8}) au point {1},{2}" -f $hr, $x, $y) }
-    $acc.accDoDefaultAction($child)
-    return 'accDoDefaultAction'
+}
+
+# Clic « natif » posté à la fenêtre qui porte l'élément. -Target Root : fenêtre de premier
+# niveau (le panneau Téléchargements est une fenêtre contextuelle propre) ; Child : fenêtre
+# enfant qui affiche la page web. Renvoie $null si Child est identique à Root (déjà essayé).
+function Send-NativeClick {
+    param($Element, [ValidateSet('Root', 'Child')][string]$Target)
+    $point = Get-ElementScreenPoint $Element
+    $child = [EdgeSaveAsCheck.Win32]::WindowAt($point.X, $point.Y)
+    if ($child -eq [IntPtr]::Zero) { throw ('aucune fenetre sous le point {0},{1}' -f $point.X, $point.Y) }
+    $root = [EdgeSaveAsCheck.Win32]::RootOf($child)
+    if ($root -eq [IntPtr]::Zero) { $root = $child }
+    if ($Target -eq 'Child' -and $child -eq $root) { return $null }
+    $hwnd = if ($Target -eq 'Root') { $root } else { $child }
+    $client = [EdgeSaveAsCheck.Win32]::ToClient($hwnd, $point.X, $point.Y)
+    Write-Log ("Clic natif ({0}) : ecran {1},{2} -> fenetre 0x{3:X} classe '{4}' DPI {5}, client {6},{7}" -f $Target, $point.X, $point.Y, $hwnd.ToInt64(), [EdgeSaveAsCheck.Win32]::ClassOf($hwnd), [EdgeSaveAsCheck.Win32]::DpiOf($hwnd), $client.X, $client.Y)
+    [EdgeSaveAsCheck.Win32]::PostClick($hwnd, $client.X, $client.Y)
+    return ('message souris poste a la fenetre ' + $Target.ToLower())
+}
+
+# Touche Entrée postée à la fenêtre du panneau : le bouton a déjà le focus après l'essai
+# Invoke (anneau de focus visible sur Enregistrer sous).
+function Send-NativeEnter {
+    param($Element)
+    $point = Get-ElementScreenPoint $Element
+    $child = [EdgeSaveAsCheck.Win32]::WindowAt($point.X, $point.Y)
+    if ($child -eq [IntPtr]::Zero) { throw ('aucune fenetre sous le point {0},{1}' -f $point.X, $point.Y) }
+    $root = [EdgeSaveAsCheck.Win32]::RootOf($child)
+    if ($root -eq [IntPtr]::Zero) { $root = $child }
+    [EdgeSaveAsCheck.Win32]::PostKey($root, 0x0D, 13)
+    return 'touche Entree postee a la fenetre'
+}
+
+# Un essai de clic, par ordre de discrétion croissante ; renvoie une description de ce qui
+# a été fait, ou $null si la méthode ne s'applique pas.
+function Invoke-SaveAsClick {
+    param([string]$Method, $Element)
+    switch ($Method) {
+        'Invoke' { return (Invoke-UiaElement $Element) }
+        'accDoDefaultAction' { return (Invoke-DefaultActionAtPoint $Element) }
+        'MouseRoot' { return (Send-NativeClick -Element $Element -Target 'Root') }
+        'MouseChild' { return (Send-NativeClick -Element $Element -Target 'Child') }
+        'Keyboard' { return (Send-NativeEnter $Element) }
+        'RealMouse' {
+            $point = Get-ElementScreenPoint $Element
+            [EdgeSaveAsCheck.Win32]::RealClick($point.X, $point.Y)
+            return 'vrai clic souris (curseur deplace)'
+        }
+        default { throw ("methode inconnue : {0}" -f $Method) }
+    }
+}
+
+# Propriétés de l'élément et de ses parents : montre s'il s'agit d'un bouton de page web
+# (panneau WebUI) et quelles actions UI Automation il propose.
+function Write-ElementDiagnostic {
+    param($Element, [string]$Label)
+    try {
+        $info = $Element.Current
+        $rect = $info.BoundingRectangle
+        $patterns = @($Element.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName -replace 'PatternIdentifiers\.Pattern$', '' })
+        $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $chain = New-Object System.Collections.Generic.List[string]
+        $node = $Element
+        for ($level = 0; $level -lt 6; $level++) {
+            $node = $walker.GetParent($node)
+            if (-not $node) { break }
+            $type = $node.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+            $chain.Add(('{0}:{1}' -f $type, (Get-ElementName $node)))
+        }
+        Write-Log ("{0} : nom='{1}' classe='{2}' framework='{3}' id='{4}' actif={5} horsecran={6} focus={7} rect={8:N0},{9:N0} {10:N0}x{11:N0} page-web={12} patterns=[{13}] parents=[{14}]" -f $Label, $info.Name, $info.ClassName, $info.FrameworkId, $info.AutomationId, $info.IsEnabled, $info.IsOffscreen, $info.HasKeyboardFocus, $rect.X, $rect.Y, $rect.Width, $rect.Height, (Test-InWebContent $Element), ($patterns -join ','), ($chain -join ' < '))
+    }
+    catch { Write-Log ("{0} : diagnostic impossible ({1})" -f $Label, $_.Exception.Message) 'WARN' }
 }
 
 # =============================================================================
@@ -667,13 +850,7 @@ function Open-DownloadsPanel {
     param($Page)
     $buttons = @(Find-NamedElements -Roots @($Page.Window) -Condition $script:CondClickable -NamePatterns $DownloadsButtonNames -PreferBrowserUi)
     if ($buttons.Count -eq 0) { return $false }
-    # Sans téléchargement en cours, le bouton est souvent désactivé et Expand renvoie E_FAIL.
-    try {
-        if (-not [bool]$buttons[0].Current.IsEnabled) {
-            Write-Log "Bouton Telechargements desactive (aucun telechargement dans cette fenetre Edge ?) : le panneau ne peut pas s'ouvrir par ce bouton." 'WARN'
-        }
-    }
-    catch { }
+    Write-ElementDiagnostic -Element $buttons[0] -Label 'Bouton Telechargements'
     $action = Invoke-UiaElement $buttons[0]
     Write-Log ("Bouton '{0}' actionne ({1}) : ouverture du panneau Telechargements" -f (Get-ElementName $buttons[0]), $action)
     return $true
@@ -696,22 +873,84 @@ function Write-UiaDiagnostic {
 # Étape 4 : fenêtre Windows « Enregistrer sous »
 # =============================================================================
 
+# Instantané des fenêtres de premier niveau (clé = handle), pris avant le clic.
+function Get-WindowSnapshot {
+    $snapshot = @{}
+    foreach ($window in [EdgeSaveAsCheck.Win32]::GetTopLevelWindows()) { $snapshot[[int64]$window.Handle] = $true }
+    return $snapshot
+}
+
+# Attend une NOUVELLE fenêtre (absente de l'instantané) intitulée « Enregistrer sous ».
+# Toute nouvelle fenêtre visible, de n'importe quel processus, est examinée : si Edge ouvre
+# son dialogue ailleurs que prévu, le journal le montre (classe, titre, processus).
 function Wait-SaveDialog {
-    param([IntPtr]$OwnerHandle, [IntPtr[]]$Exclude, [int]$Seconds)
+    param([IntPtr]$OwnerHandle, [hashtable]$Known, [hashtable]$Reported, [int]$Seconds)
     $deadline = (Get-Date).AddSeconds($Seconds)
-    $reported = @{}
     do {
-        foreach ($dialog in @(Get-EdgeDialogWindows -OwnerHandle $OwnerHandle)) {
-            if ($Exclude -contains $dialog.Handle) { continue }
-            if (Test-LikeAny $dialog.Title $SaveDialogTitles) { return $dialog }
-            if (-not $reported.ContainsKey($dialog.Handle)) {
-                $reported[$dialog.Handle] = $true
-                Write-Log ("Boite de dialogue Edge ignoree (titre inattendu) : '{0}'" -f $dialog.Title) 'WARN'
+        $edgePids = @(Get-EdgeProcessIds)
+        foreach ($window in [EdgeSaveAsCheck.Win32]::GetTopLevelWindows()) {
+            if (-not $window.Visible -or $Known.ContainsKey([int64]$window.Handle)) { continue }
+            $fromEdge = ($edgePids -contains [int]$window.ProcessId) -or ($window.Owner -eq $OwnerHandle)
+            if ((Test-LikeAny $window.Title $SaveDialogTitles) -and ($window.ClassName -eq '#32770' -or $fromEdge)) {
+                if (-not $fromEdge) { Write-Log ("Fenetre trouvee hors processus Edge (PID {0}) : verifier qu'elle vient bien du clic" -f $window.ProcessId) 'WARN' }
+                return $window
+            }
+            $key = [int64]$window.Handle
+            if (-not $Reported.ContainsKey($key) -and $Reported.Count -lt 15) {
+                $Reported[$key] = $true
+                $process = Get-Process -Id ([int]$window.ProcessId) -ErrorAction SilentlyContinue
+                Write-Log ("Nouvelle fenetre ignoree : classe '{0}' titre '{1}' processus '{2}' (Edge : {3})" -f $window.ClassName, $window.Title, $process.ProcessName, $fromEdge) 'WARN'
             }
         }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
     return $null
+}
+
+# Le panneau Téléchargements d'Edge est une page web (WebUI) : l'action UI Automation
+# « Invoke » peut donner le focus au bouton sans déclencher son action. On essaie donc
+# plusieurs méthodes, de la plus discrète à la plus native, en s'arrêtant dès qu'une fenêtre
+# « Enregistrer sous » apparaît. Aucune ne déplace la souris, sauf RealMouse (désactivée par
+# défaut, voir -AllowRealMouse). Renvoie la fenêtre trouvée (ou $null) et les méthodes essayées.
+function Invoke-SaveAsClickLadder {
+    param($Page, $SaveAs)
+    $known = Get-WindowSnapshot
+    $reported = @{}
+    Write-ElementDiagnostic -Element $SaveAs.Element -Label 'Bouton Enregistrer sous'
+    $methods = @('Invoke', 'accDoDefaultAction', 'MouseRoot', 'MouseChild', 'Keyboard')
+    if ($AllowRealMouse) { $methods += 'RealMouse' }
+    $dialog = $null
+    $tried = New-Object System.Collections.Generic.List[string]
+    foreach ($method in $methods) {
+        try { $done = Invoke-SaveAsClick -Method $method -Element $SaveAs.Element }
+        catch {
+            Write-Log ("Methode '{0}' en echec : {1}" -f $method, $_.Exception.Message) 'WARN'
+            continue
+        }
+        if (-not $done) {
+            Write-Log ("Methode '{0}' non applicable ici" -f $method)
+            continue
+        }
+        $tried.Add($method)
+        Write-Log ("Clic sur '{0}' (methode {1} : {2})" -f (Get-ElementName $SaveAs.Element), $method, $done)
+        $dialog = Wait-SaveDialog -OwnerHandle $Page.Handle -Known $known -Reported $reported -Seconds $ClickWaitSeconds
+        if ($dialog) {
+            Write-Log ("Fenetre obtenue avec la methode '{0}'" -f $method) 'OK'
+            break
+        }
+        # Bouton disparu : le clic a eu un effet (fenêtre lente ?). Ne pas cliquer une 2e fois.
+        $again = Find-SaveAsButton -Page $Page
+        if (-not $again) {
+            Write-Log ("Le bouton Enregistrer sous a disparu apres la methode '{0}' : attente de la fenetre sans autre clic" -f $method) 'WARN'
+            break
+        }
+        $SaveAs = $again
+        Write-Log ("Aucune fenetre apres la methode '{0}' (bouton toujours present)" -f $method) 'WARN'
+    }
+    if (-not $dialog) {
+        $dialog = Wait-SaveDialog -OwnerHandle $Page.Handle -Known $known -Reported $reported -Seconds $DialogTimeoutSeconds
+    }
+    return [pscustomobject]@{ Dialog = $dialog; Tried = @($tried) }
 }
 
 function Get-DialogFileName {
@@ -742,8 +981,15 @@ function Close-SaveDialog {
 # =============================================================================
 
 function Invoke-EdgeSaveAsCheck {
-    Initialize-Uia
     Initialize-Win32
+    # Avant tout appel UI Automation : coordonnées en pixels physiques, cohérentes avec celles
+    # des fenêtres d'Edge (sinon un écran avec mise à l'échelle décale les clics postés).
+    # Étape facultative : un échec ici ne doit jamais interrompre la vérification.
+    $dpiMode = 'indisponible'
+    try { $dpiMode = [EdgeSaveAsCheck.Win32]::EnableDpiAwareness() }
+    catch { $dpiMode = 'indisponible : ' + $_.Exception.Message }
+    Write-Log ('Mode DPI du processus : {0}' -f $dpiMode)
+    Initialize-Uia
 
     if ((Get-EdgeProcessIds).Count -eq 0) {
         Stop-Check 2 "Microsoft Edge n'est pas lance (aucun processus msedge)."
@@ -790,18 +1036,11 @@ function Invoke-EdgeSaveAsCheck {
     }
     if ($saveAs.PromptText) { Write-Log ("Invite de telechargement : '{0}'" -f $saveAs.PromptText) }
 
-    # --- 3. Clic « Enregistrer sous » --------------------------------------------
-    $existing = @(Get-EdgeDialogWindows -OwnerHandle $page.Handle | ForEach-Object { $_.Handle })
-    if ($existing.Count -gt 0) {
-        Write-Log ('{0} boite(s) de dialogue Edge deja ouverte(s) avant le clic (ignoree(s))' -f $existing.Count) 'WARN'
-    }
-    $action = Invoke-UiaElement $saveAs.Element
-    Write-Log ("Clic sur '{0}' ({1})" -f (Get-ElementName $saveAs.Element), $action)
-
-    # --- 4. Vérification de la fenêtre Windows ----------------------------------
-    $dialog = Wait-SaveDialog -OwnerHandle $page.Handle -Exclude $existing -Seconds $DialogTimeoutSeconds
+    # --- 3. Clic « Enregistrer sous » + 4. Vérification de la fenêtre Windows ------
+    $result = Invoke-SaveAsClickLadder -Page $page -SaveAs $saveAs
+    $dialog = $result.Dialog
     if (-not $dialog) {
-        Stop-Check 6 ("La fenetre Windows d'enregistrement ne s'est pas ouverte dans les {0} s." -f $DialogTimeoutSeconds)
+        Stop-Check 6 ("La fenetre Windows d'enregistrement ne s'est pas ouverte (methodes essayees : {0}). Voir les lignes du journal sur le bouton et les nouvelles fenetres." -f ($result.Tried -join ', '))
     }
     Write-Log ("Fenetre Windows detectee : '{0}' (classe {1}, HWND 0x{2:X}, PID {3})" -f $dialog.Title, $dialog.ClassName, $dialog.Handle.ToInt64(), $dialog.ProcessId) 'OK'
     $fileName = Get-DialogFileName $dialog.Handle

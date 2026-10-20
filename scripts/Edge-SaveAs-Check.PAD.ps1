@@ -27,6 +27,7 @@ $parameters = @{
     FileNamePattern = '*'                  # ex. 'Instruments*.xlsx'
     LogPath         = 'C:\Scripts\Logs'    # dossier : un journal par exécution
     CloseDialog     = $false               # $true : ferme la fenêtre après vérification
+    # AllowRealMouse = $true               # dernier recours : vrai clic souris (curseur déplacé un instant)
 }
 
 # Mode linguistique restreint (AppLocker / WDAC) : le script ne peut pas y fonctionner.
