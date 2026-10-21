@@ -1,6 +1,7 @@
 # =============================================================================
-# Edge-SaveAs-Check : version autonome pour Power Automate Desktop (fichier GENERE par
-# Build-PadStandalone.ps1, ne pas modifier a la main).
+# Edge-SaveAs-Check : script autonome pour Power Automate Desktop. C'est le SEUL fichier
+# du projet : on le modifie directement ici (il ne contient plus de commentaires de detail,
+# voir le principe de fonctionnement ci-dessous et l'historique git pour la version commentee).
 #
 # A coller tel quel dans l'action " Executer un script PowerShell ".
 #  - Creer avant cette action les variables PAD BrowserPageURL et BrowserPageTitle (action
@@ -14,6 +15,19 @@
 #      9 variable PAD vide
 #  - Journaux : dossier EdgeSaveAsCheck\Logs du profil de chaque utilisateur.
 #  - Aucun signe pourcent ne doit apparaitre ici, sauf autour des variables PAD.
+#  - Regles pour modifier ce fichier : UTF-8 sans BOM, caracteres ASCII seulement (PAD le
+#    copie dans un fichier temporaire), jamais de signe pourcent hors des deux variables PAD.
+#
+# Principe de fonctionnement
+#  1. Trouve l'onglet Edge (URL + titre) et ouvre le panneau Telechargements.
+#  2. Reconnait les elements par leur classe UI Automation (ToolbarDownloadsButton, saveAs),
+#     non traduite : independant de la langue d'Edge. Les noms FR/EN ne servent que de repli.
+#  3. Clique " Enregistrer sous " par une echelle de methodes : message souris natif poste a
+#     la fenetre du panneau (celui qui fonctionne sur Edge), puis Invoke, accDoDefaultAction,
+#     message natif a nouveau, fenetre enfant, touche Entree postee. Jamais de message a une
+#     fenetre qui n'est pas Edge ; pas de curseur ni de clavier reels sauf AllowRealMouse.
+#  4. Attend une NOUVELLE boite Windows (classe #32770) issue d'Edge, sans lire son titre.
+#  5. Ecrit toujours un journal se terminant par RESULTAT, et le code sur la sortie standard.
 # =============================================================================
 
 $parameters = @{

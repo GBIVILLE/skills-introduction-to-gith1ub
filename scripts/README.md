@@ -6,28 +6,25 @@ ouvre le panneau Téléchargements d'Edge, clique sur « Enregistrer sous » et 
 
 ## Installer le script dans un flux PAD
 
-**Option A (recommandée) : version autonome, rien à installer sur les postes.**
-Le script voyage avec le flux : ceux qui exécutent le flux n'ont rien à copier.
+Un seul fichier : [`Edge-SaveAs-Check.PAD-standalone.ps1`](Edge-SaveAs-Check.PAD-standalone.ps1).
+Il voyage avec le flux : ceux qui exécutent le flux n'ont rien à copier ni à installer.
 
 1. Dans le flux, créer les variables `BrowserPageURL` et `BrowserPageTitle` (action « Définir la
    variable »). Jokers acceptés, par exemple `*lims.eu.eurofinsbpt.com/elimsMetrology*` et
    `*eLIMS-BPT*`. Apostrophes autorisées.
-2. Ajouter une action « Exécuter un script PowerShell » et y coller tout le contenu de
-   [`Edge-SaveAs-Check.PAD-standalone.ps1`](Edge-SaveAs-Check.PAD-standalone.ps1) (bouton « Copy raw file »).
+2. Ajouter une action « Exécuter un script PowerShell » et y coller tout le contenu du fichier
+   (bouton « Copy raw file » sur GitHub).
 3. Dans cette action, décocher « Échec après expiration du délai » (ou mettre au moins 120 s).
-4. **Premier essai** : exécuter le flux une fois sur un poste avec Edge ouvert sur la page cible.
-   Le fichier fait environ 54 Ko (code seul, sans commentaires, ASCII pur) ; si PAD le refusait
-   ou le tronquait, le lanceur (option B) reste disponible.
 
-**Option B : script à un emplacement partagé.** Un dossier réseau lisible par tous les
-utilisateurs contient `Edge-SaveAs-Check.ps1` ; coller le lanceur
-[`Edge-SaveAs-Check.PAD.ps1`](Edge-SaveAs-Check.PAD.ps1) dans l'action et régler `$ScriptPath`.
-Une seule copie à mettre à jour, mais le flux dépend de ce partage.
+Réglages facultatifs, dans le bloc `$parameters` en tête du fichier : `FileNamePattern` (nom du
+fichier attendu, ex. `'Instruments*.xlsx'`), `CloseDialog` (fermer la fenêtre après vérification,
+sans rien enregistrer), `AllowRealMouse` (dernier recours : vrai clic souris), `TimeoutSeconds`,
+`DialogTimeoutSeconds`, `ClickWaitSeconds`, `LogRetentionDays`.
 
 ## Résultat
 
 `%PowershellOutput%` contient un code de résultat (suivi d'un retour à la ligne : le rogner) ;
-en cas d'échec, `%ScriptError%` contient le message.
+en cas d'échec, `%ScriptError%` contient le message. Le code est aussi la dernière ligne du journal.
 
 | Code | Signification |
 |---|---|
@@ -40,7 +37,6 @@ en cas d'échec, `%ScriptError%` contient le message.
 | 6 | La fenêtre Windows ne s'est pas ouverte |
 | 8 | PowerShell en mode restreint (stratégie de sécurité) : script inutilisable |
 | 9 | Variable PAD vide (`BrowserPageURL` ou `BrowserPageTitle`) |
-| 10 à 13 | Lanceur seulement : script introuvable, illisible, invalide ou incomplet |
 
 ## Conditions
 
@@ -61,15 +57,13 @@ repli. Le titre de la page (`BrowserPageTitle`) est celui de la page, que vous f
 caractères invisibles (espace de largeur nulle, marques de sens d'écriture, par exemple dans le
 titre de la fenêtre Edge) sont ignorés dans la comparaison.
 
-État de la validation : testé sur Edge en français (Windows 11, build 26100) pour le bouton
-Téléchargements, le bouton « Enregistrer sous » et la fenêtre. La barre d'adresse a
-été lue sur cet Edge, mais on ne sait pas si c'est par sa classe (`OmniboxViewViews`) ou par son
-nom (repli) : la ligne « Barre d adresse identifiee par » du journal le dit désormais, et si ni
-l'un ni l'autre ne correspond, le script prend le premier champ de saisie de la fenêtre. Les
-autres langues d'Edge sont prévues mais pas encore testées, et Edge peut changer ces noms de
-classe d'une version à l'autre : en cas d'échec (code 4 ou 5), le journal liste les boutons vus
-avec leur classe (« Diagnostic - … nom[classe] »), ce qui permet de corriger
-`-DownloadsButtonClasses` et `-SaveAsButtonClasses`.
+État de la validation : testé sur Edge en français (Windows 11, build 26100, PowerShell 5.1) :
+barre d'adresse (classe `OmniboxViewViews`), bouton Téléchargements, bouton « Enregistrer sous » et
+fenêtre sont tous reconnus par leur classe, sans dépendre d'un nom traduit. Les autres langues
+d'Edge sont prévues mais pas encore testées, et Edge peut changer ces noms de classe d'une version
+à l'autre : en cas d'échec (code 4 ou 5), le journal liste les boutons vus avec leur classe
+(« Diagnostic - … nom[classe] »), ce qui permet d'ajouter la bonne classe dans `$parameters`
+(`DownloadsButtonClasses`, `SaveAsButtonClasses`, `AddressBarClasses`).
 
 ## Arrière-plan
 
@@ -87,7 +81,9 @@ alors enregistré), qui peut prendre le premier plan. Un vrai clic souris n'est 
 
 Ce n'est pas un mode « fenêtre invisible » : le journal note le premier plan et la position du
 curseur avant et après le clic (lignes « Etat avant/apres le clic »), pour le vérifier sur chaque
-poste. Cas limites : si une autre fenêtre recouvre le panneau d'Edge, le clic peut ne pas
+poste. Sur le poste de test, le curseur n'a pas bougé et Edge était déjà au premier plan avant le
+clic ; le premier plan est ensuite passé à la fenêtre « Enregistrer sous » (classe `#32770`). Le
+cas d'Edge masqué derrière une autre application n'a pas été mesuré. Cas limites : si une autre fenêtre recouvre le panneau d'Edge, le clic peut ne pas
 l'atteindre (le script refuse alors de poster à l'autre application et le journal le dit) ; si
 Edge tourne en administrateur et pas le script, Windows refuse l'accès ou les messages (codes 3 à 6).
 
@@ -102,20 +98,23 @@ de clic qui a fonctionné et se termine toujours par une ligne `RESULTAT`. Sur u
 ## Limites connues
 
 - Les variables PAD sont insérées telles quelles dans le script : une valeur contenant un saut de
-  ligne, ou une ligne commençant par `'@`, casse l'analyse du script (code 12 du lanceur, erreur
-  PowerShell avec la version autonome). Une URL ou un titre de page n'en contient pas.
+  ligne, ou une ligne commençant par `'@`, casse l'analyse du script (erreur PowerShell dans `ScriptError`).
+  Une URL ou un titre de page n'en contient pas.
 - Si plusieurs onglets correspondent à l'URL et au titre, le premier trouvé est utilisé (l'onglet
   actif d'une fenêtre avant ses autres onglets). Pour lire l'URL d'un onglet inactif dont le
   titre correspond, le script l'active brièvement, puis revient à l'onglet d'origine.
 - Les noms de classe (`ToolbarDownloadsButton`, `saveAs`) sont ceux d'Edge à ce jour.
 
-## Mettre à jour
+## Modifier le script
 
-Modifier `Edge-SaveAs-Check.ps1`, puis relancer `Build-PadStandalone.ps1` pour régénérer la
-version autonome. Il retire les commentaires et vérifie que le code est strictement identique
-(mêmes jetons), la syntaxe, l'absence de signe pourcent parasite, de BOM et de caractère non ASCII.
-Le fichier source ne doit contenir aucun signe pourcent : PAD l'interpréterait comme une variable.
+Le fichier est la seule source : on le modifie directement. Règles : UTF-8 sans BOM, ASCII
+uniquement (PAD le recopie dans un fichier temporaire), aucun signe pourcent hors des deux
+variables PAD (`%BrowserPageURL%`, `%BrowserPageTitle%`), car PAD lirait toute autre occurrence
+comme une variable. Le fichier ne contient que le code et un en-tête de principe de
+fonctionnement ; la version commentée est dans l'historique git (commit `b292ec0`, fichier
+`scripts/Edge-SaveAs-Check.ps1`).
 
-Passage de l'ancienne version (variables `UrlCible` / `TitreCible`, journaux dans `Scripts\Logs`) :
-renommer les variables du flux en `BrowserPageURL` et `BrowserPageTitle`, recoller le contenu de la
-version autonome ; les journaux sont désormais dans `%LOCALAPPDATA%\EdgeSaveAsCheck\Logs`.
+Passage depuis l'ancienne version (variables `UrlCible` / `TitreCible`, journaux dans
+`Scripts\Logs`) : renommer les variables du flux en `BrowserPageURL` et `BrowserPageTitle`,
+recoller le contenu du fichier ; les journaux sont désormais dans
+`%LOCALAPPDATA%\EdgeSaveAsCheck\Logs`.
