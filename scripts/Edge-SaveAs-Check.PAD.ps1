@@ -2,7 +2,10 @@
 # Lanceur Power Automate Desktop pour Edge-SaveAs-Check.ps1
 #
 # À coller tel quel dans l'action « Exécuter un script PowerShell ».
-#  - Créer avant cette action les variables PAD UrlCible et TitreCible (action
+# Convient quand le script est à un emplacement partagé par tous les utilisateurs (dossier
+# réseau lisible par tous) : une seule copie à mettre à jour. Sinon, utiliser la version
+# autonome Edge-SaveAs-Check.PAD-standalone.ps1, qui voyage avec le flux (voir README.md).
+#  - Créer avant cette action les variables PAD BrowserPageURL et BrowserPageTitle (action
 #    « Définir la variable »). Jokers acceptés, apostrophes autorisées.
 #  - Action PAD : désactiver « Échec après expiration du délai » ou mettre au moins 120 s.
 #  - Résultat : PowershellOutput contient le code (0 = fenêtre « Enregistrer sous »
@@ -15,17 +18,18 @@
 #  - Aucun signe pourcent ne doit apparaître ici, sauf autour des variables PAD.
 # =============================================================================
 
-$ScriptPath = 'C:\Scripts\Edge-SaveAs-Check.ps1'   # <-- emplacement du script
+$ScriptPath = 'C:\Scripts\Edge-SaveAs-Check.ps1'   # <-- emplacement du script (ex. dossier réseau partagé)
 
 $parameters = @{
     UrlPattern      = @'
-%UrlCible%
+%BrowserPageURL%
 '@
     TitlePattern    = @'
-%TitreCible%
+%BrowserPageTitle%
 '@
     FileNamePattern = '*'                  # ex. 'Instruments*.xlsx'
-    LogPath         = 'C:\Scripts\Logs'    # dossier : un journal par exécution
+    # Journaux dans le profil de chaque utilisateur : aucun droit d'écriture à prévoir ailleurs.
+    LogPath         = $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'EdgeSaveAsCheck\Logs' } else { '' })
     CloseDialog     = $false               # $true : ferme la fenêtre après vérification
     # AllowRealMouse = $true               # dernier recours : vrai clic souris (curseur déplacé un instant)
 }
