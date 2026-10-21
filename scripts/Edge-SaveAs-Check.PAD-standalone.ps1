@@ -6,8 +6,12 @@
 #  - Creer avant cette action les variables PAD BrowserPageURL et BrowserPageTitle (action
 #    " Definir la variable "). Jokers acceptes (ex. *monappli/labo*), apostrophes autorisees.
 #  - Action PAD : desactiver " Echec apres expiration du delai " ou mettre au moins 120 s.
-#  - Resultat : PowershellOutput contient le code (0 = fenetre " Enregistrer sous " ouverte),
-#    ScriptError contient le message en cas d'echec. Codes : voir l'en-tete du script ci-dessous.
+#  - Resultat : PowershellOutput contient le code, ScriptError le message en cas d'echec.
+#      0 fenetre " Enregistrer sous " ouverte      1 erreur inattendue (voir le journal)
+#      2 Edge n'est pas lance                      3 aucune page Edge ne correspond
+#      4 bouton Telechargements introuvable        5 bouton " Enregistrer sous " introuvable
+#      6 la fenetre Windows ne s'est pas ouverte   8 PowerShell en mode restreint
+#      9 variable PAD vide
 #  - Journaux : dossier EdgeSaveAsCheck\Logs du profil de chaque utilisateur.
 #  - Aucun signe pourcent ne doit apparaitre ici, sauf autour des variables PAD.
 # =============================================================================
@@ -25,154 +29,11 @@ $parameters = @{
     # AllowRealMouse = $true              # dernier recours : vrai clic souris (curseur deplace un instant)
 }
 & {
-<#
-.SYNOPSIS
-    Repère une page Edge (URL + titre), ouvre le panneau Téléchargements, clique sur
-    « Enregistrer sous » et vérifie que la fenêtre Windows d'enregistrement s'ouvre.
-
-.DESCRIPTION
-    Fonctionne en arrière-plan : UI Automation, accessibilité MSAA et messages Windows postés
-    directement aux fenêtres d'Edge. Le script ne déplace pas le curseur, n'envoie aucune frappe
-    au clavier et ne met pas Edge au premier plan (seul -AllowRealMouse, désactivé par défaut,
-    déplace brièvement le curseur). Ce que l'utilisateur voit quand même, car c'est Edge qui le
-    fait : le panneau Téléchargements qui s'ouvre, l'onglet cible qui devient actif s'il ne
-    l'était pas, et la fenêtre « Enregistrer sous » (laissée ouverte, ou fermée avec -CloseDialog).
-    Les messages ne sont jamais postés qu'à des fenêtres d'Edge, même si une autre application
-    le recouvre.
-
-    Indépendant de la langue d'Edge : les éléments sont reconnus par leur classe UI Automation
-    (non traduite) et la boîte « Enregistrer sous » par sa classe de boîte de dialogue Windows ;
-    les noms français et anglais ne servent que de repli. Le titre de l'onglet (-TitlePattern)
-    est celui de la page, donné par l'appelant.
-
-    Étapes :
-      1. Recherche, dans les fenêtres Edge, de l'onglet dont le titre correspond à
-         -TitlePattern et l'URL à -UrlPattern. Si c'est un onglet inactif, il est
-         sélectionné (sans activer la fenêtre).
-      2. Ouverture du panneau Téléchargements de cette fenêtre via le bouton de la barre
-         d'outils (sauf si l'invite « Que voulez-vous faire avec ... ? » est déjà visible).
-      3. Clic sur le bouton « Enregistrer sous » de l'invite de téléchargement. Le panneau
-         d'Edge est une page web qui peut ignorer le clic simulé d'UI Automation : les
-         méthodes sont essayées l'une après l'autre (message souris natif, Invoke,
-         accDoDefaultAction, message souris à la fenêtre enfant, touche Entrée) jusqu'à
-         l'ouverture de la fenêtre ; le journal indique laquelle a fonctionné.
-      4. Attente d'une NOUVELLE fenêtre Windows « Enregistrer sous » (absente avant le clic).
-
-    Le journal est ouvert dès le début du script et se termine toujours par une ligne
-    « RESULTAT ». Codes de sortie :
-      0  OK : la fenêtre « Enregistrer sous » s'est ouverte
-      1  erreur inattendue (détail dans le journal)
-      2  Edge n'est pas lancé
-      3  aucune page Edge ne correspond à l'URL et au titre
-      4  bouton « Téléchargements » introuvable dans la barre d'outils
-      5  bouton « Enregistrer sous » introuvable dans le panneau
-      6  la fenêtre Windows « Enregistrer sous » ne s'est pas ouverte
-      7  -RunHidden utilisé alors que le script n'est pas lancé depuis un fichier .ps1
-      8  PowerShell en mode linguistique restreint (stratégie de sécurité) : script inutilisable
-      9  paramètre obligatoire vide (UrlPattern ou TitlePattern, ex. variable PAD vide)
-
-.PARAMETER UrlPattern
-    URL de la page, jokers acceptés (opérateur -like). Si Edge masque « https:// » ou
-    « www. » dans la barre d'adresse, la comparaison se fait aussi sans ce préfixe.
-
-.PARAMETER TitlePattern
-    Titre de l'onglet, jokers acceptés (-like). Exemple : '*Copilot*'.
-
-.PARAMETER FileNamePattern
-    Facultatif : nom du fichier attendu dans l'invite de téléchargement, jokers acceptés.
-    Exemple : 'Instruments*.xlsx'. Par défaut '*' = première invite trouvée.
-
-.PARAMETER TimeoutSeconds
-    Délai d'attente du bouton « Enregistrer sous » après ouverture du panneau.
-
-.PARAMETER DialogTimeoutSeconds
-    Délai final d'attente de la fenêtre Windows « Enregistrer sous » quand aucune méthode de
-    clic n'a produit de fenêtre.
-
-.PARAMETER ClickWaitSeconds
-    Délai d'attente de la fenêtre après chaque méthode de clic, avant d'essayer la suivante.
-
-.PARAMETER AllowRealMouse
-    Ajoute en dernier recours un vrai clic souris (le curseur se déplace un instant) : à
-    n'utiliser que si les méthodes d'arrière-plan échouent. Le panneau doit être visible.
-
-.PARAMETER LogPath
-    Fichier journal, ou dossier dans lequel un fichier est créé à chaque exécution.
-    Par défaut : dossier Logs à côté du script, ou dossier TEMP\EdgeSaveAsCheck si le script
-    n'est pas lancé depuis un fichier (lanceur PAD) ou si le dossier est en lecture seule.
-
-.PARAMETER CloseDialog
-    Ferme la fenêtre « Enregistrer sous » après vérification (équivaut à « Annuler » :
-    aucun fichier n'est enregistré). Sans ce switch, la fenêtre reste ouverte.
-
-.PARAMETER RunHidden
-    Relance le script dans un processus PowerShell masqué (aucune console) et rend la
-    main immédiatement. Le résultat est à lire dans le journal.
-
-.PARAMETER DownloadsButtonClasses
-    Classe UI Automation du bouton Téléchargements de la barre d'outils. Les classes ne sont
-    pas traduites : c'est le critère principal, qui marche quelle que soit la langue d'Edge.
-
-.PARAMETER SaveAsButtonClasses
-    Classe UI Automation du bouton « Enregistrer sous » de l'invite (critère principal).
-
-.PARAMETER AddressBarClasses
-    Classe UI Automation de la barre d'adresse (critère principal).
-
-.PARAMETER LogRetentionDays
-    Les journaux du dossier de journaux plus anciens que ce nombre de jours sont supprimés au
-    démarrage (30 par défaut, 0 pour tout conserver).
-
-.PARAMETER DownloadsButtonNames
-    Noms possibles du bouton Téléchargements (jokers acceptés). Repli, utilisé seulement si la
-    classe ne correspond à rien : dépend de la langue d'Edge.
-
-.PARAMETER SaveAsButtonNames
-    Noms possibles du bouton « Enregistrer sous » (jokers acceptés). Repli dépendant de la langue.
-
-.PARAMETER AddressBarNames
-    Noms possibles de la barre d'adresse Edge (jokers acceptés). Repli dépendant de la langue.
-
-.PARAMETER SaveDialogTitles
-    Titres possibles de la fenêtre Windows d'enregistrement (jokers acceptés). Facultatif : une
-    nouvelle boîte de dialogue Windows (classe #32770) issue d'Edge est reconnue sans titre.
-
-.EXAMPLE
-    .\Edge-SaveAs-Check.ps1 -UrlPattern '*monappli.local/labo*' -TitlePattern '*Instruments*' -FileNamePattern 'Instruments*.xlsx'
-
-.EXAMPLE
-    # Totalement invisible : rend la main tout de suite, résultat dans le journal.
-    .\Edge-SaveAs-Check.ps1 -UrlPattern '*monappli.local/labo*' -TitlePattern '*Instruments*' -RunHidden
-
-.EXAMPLE
-    # Depuis une tâche planifiée « Exécuter seulement si l'utilisateur est connecté » :
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Scripts\Edge-SaveAs-Check.ps1" -UrlPattern "*monappli.local/labo*" -TitlePattern "*Instruments*" -CloseDialog
-
-.NOTES
-    - Doit tourner dans la session de l'utilisateur connecté (pas en SYSTEM ni en
-      « Exécuter même si l'utilisateur n'est pas connecté ») : UI Automation ne voit que
-      le bureau de la session courante.
-    - Fichier en UTF-8 sans BOM : un BOM copié depuis GitHub se retrouve devant #Requires et
-      empêche l'analyse du script. Les accents ne figurent que dans les commentaires (les
-      libellés accentués sont construits avec [char]) : le script marche quel que soit l'encodage.
-    - Compatible Windows PowerShell 5.1 et PowerShell 7.
-    - Power Automate Desktop, deux façons (voir README.md) : coller dans l'action « Exécuter un
-      script PowerShell » la version autonome Edge-SaveAs-Check.PAD-standalone.ps1 (le script
-      voyage avec le flux, rien à installer sur les postes), ou le lanceur
-      Edge-SaveAs-Check.PAD.ps1 qui lit ce fichier à un emplacement partagé. Le script ne
-      contient aucun signe pourcent (PAD l'interpréterait comme une variable). -RunHidden est
-      inutile dans PAD, qui exécute déjà PowerShell sans fenêtre.
-    - Quand la sortie est redirigée (PAD, « Exécuter la commande DOS »...), le détail va
-      seulement dans le journal : la sortie standard contient uniquement le code de sortie
-      et, en cas d'échec, le message d'erreur est écrit sur la sortie d'erreur.
-#>
 [CmdletBinding()]
 param(
-    # --- À adapter -------------------------------------------------------------
     [string]$UrlPattern = 'https://mon-application.example/*',
     [string]$TitlePattern = '*Titre de ma page*',
     [string]$FileNamePattern = '*',
-    # ---------------------------------------------------------------------------
     [ValidateRange(1, 300)][int]$TimeoutSeconds = 20,
     [ValidateRange(1, 300)][int]$DialogTimeoutSeconds = 15,
     [ValidateRange(1, 60)][int]$ClickWaitSeconds = 3,
@@ -190,8 +51,6 @@ param(
     [string[]]$SaveDialogTitles = @('Enregistrer sous*', 'Save As*')
 )
 
-# Mode linguistique restreint (AppLocker / WDAC) : Add-Type et UI Automation y sont interdits.
-# Vérifié avant tout appel .NET, qui échouerait avec un message moins clair.
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
     Write-Output 8
     Write-Error -ErrorAction Continue ('PowerShell est en mode {0} (strategie de securite) : Add-Type et UI Automation sont bloques, le script ne peut pas fonctionner.' -f $ExecutionContext.SessionState.LanguageMode)
@@ -207,16 +66,12 @@ $script:LogFile = $null
 $script:BoundParams = $PSBoundParameters
 $script:ScriptPath = $PSCommandPath
 $script:MinimizedHandle = [IntPtr]::Zero
+$script:PageHandle = [IntPtr]::Zero
 $script:DialogLeftOpen = $false
-# Sortie redirigée (Power Automate Desktop...) : pas d'écho console, seul le code est renvoyé.
+$script:AddressBarHow = $null
 $script:QuietConsole = ($Host.Name -eq 'ConsoleHost') -and [Console]::IsOutputRedirected
 
-# =============================================================================
-# Journal et gestion des erreurs
-# =============================================================================
 
-# Supprime les journaux du dossier plus anciens que -LogRetentionDays jours (0 = tout garder) :
-# après des mois d'exécutions, ou sur un dossier partagé, il ne grossit pas indéfiniment.
 function Remove-OldLogs {
     param([string]$Folder)
     if ($LogRetentionDays -le 0) { return }
@@ -233,21 +88,17 @@ function Remove-OldLogs {
 function Initialize-Log {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) {
-        # Par défaut : à côté du script s'il est lancé depuis un fichier, sinon dossier propre à
-        # l'utilisateur (le script peut servir à plusieurs utilisateurs d'un même poste).
         $Path = if ($script:ScriptPath) { Join-Path (Split-Path -Parent $script:ScriptPath) 'Logs' }
         elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'EdgeSaveAsCheck\Logs' }
         else { Join-Path ([System.IO.Path]::GetTempPath()) 'EdgeSaveAsCheck' }
     }
-    # Un dossier (existant, ou chemin sans extension) reçoit un fichier par exécution, nommé avec
-    # l'utilisateur et l'heure (un dossier partagé entre utilisateurs ne mélange pas les journaux).
     if ((Test-Path -LiteralPath $Path -PathType Container) -or -not [System.IO.Path]::HasExtension($Path)) {
         Remove-OldLogs -Folder $Path
         $user = ([string]$env:USERNAME) -replace '[^\w.-]', '_'
         if (-not $user) { $user = 'user' }
-        $Path = Join-Path $Path ('EdgeSaveAsCheck_{0}_{1:yyyyMMdd_HHmmss}.log' -f $user, $script:StartTime)
+        $stamp = $script:StartTime.ToString('yyyyMMdd_HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
+        $Path = Join-Path $Path ('EdgeSaveAsCheck_{0}_{1}_{2}.log' -f $user, $stamp, $PID)
     }
-    # Si le dossier demandé n'est pas accessible en écriture, repli sur le dossier TEMP.
     foreach ($candidate in @($Path, (Join-Path ([System.IO.Path]::GetTempPath()) (Split-Path -Leaf $Path)))) {
         try {
             $dir = Split-Path -Parent $candidate
@@ -274,7 +125,6 @@ function Write-Log {
     if (-not $script:QuietConsole) { Write-Host $line }
 }
 
-# Interrompt le traitement avec un code de sortie précis (intercepté par le catch final).
 function Stop-Check {
     param([int]$Code, [string]$Message)
     $exception = [System.Exception]::new($Message)
@@ -300,13 +150,23 @@ function Test-LikeAny {
     return $false
 }
 
-# =============================================================================
-# Relance masquée (-RunHidden)
-# =============================================================================
+function Remove-InvisibleMarks {
+    param([string]$Text)
+    if ($null -eq $Text) { return '' }
+    return [regex]::Replace($Text, '[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]', '')
+}
+
+function Test-PatternMatch {
+    param([string]$Value, [string]$Pattern)
+    if ($Value -like $Pattern) { return $true }
+    $literal = $Pattern -replace '\[', '`[' -replace '\]', '`]'
+    if ($literal -ne $Pattern -and $Value -like $literal) { return $true }
+    return $false
+}
+
 
 function ConvertTo-PsLiteral {
     param([string]$Value)
-    # PowerShell traite aussi ‘ ’ ‚ ‛ comme des apostrophes : on les double toutes.
     return "'" + ($Value -replace '([''\u2018\u2019\u201A\u201B])', '$1$1') + "'"
 }
 
@@ -330,10 +190,8 @@ function Start-HiddenInstance {
         if ($entry.Key -in @('RunHidden', 'LogPath')) { continue }
         $arguments.Add((ConvertTo-PsArgument -Name $entry.Key -Value $entry.Value))
     }
-    # Même journal pour le processus parent et le processus masqué.
     if ($script:LogFile) { $arguments.Add((ConvertTo-PsArgument -Name 'LogPath' -Value $script:LogFile)) }
 
-    # -EncodedCommand évite tout problème de guillemets / accents dans les arguments.
     $command = '& {0} {1}; exit $LASTEXITCODE' -f (ConvertTo-PsLiteral $script:ScriptPath), ($arguments -join ' ')
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($command))
     $exe = (Get-Process -Id $PID).Path
@@ -342,9 +200,6 @@ function Start-HiddenInstance {
     Write-Log ('Relance en arriere-plan dans un processus masque (PID {0}). Resultat dans : {1}' -f $process.Id, $script:LogFile) 'OK'
 }
 
-# =============================================================================
-# Win32 (énumération des fenêtres, sans dépendre du focus)
-# =============================================================================
 
 function Initialize-Win32 {
     if ('EdgeSaveAsCheck.Win32' -as [type]) { return }
@@ -373,6 +228,15 @@ namespace EdgeSaveAsCheck
         public int Y;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     public static class Win32
     {
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
@@ -392,6 +256,8 @@ namespace EdgeSaveAsCheck
         // Default action (click) through MSAA accessibility, without moving the mouse.
         [DllImport("oleacc.dll")] public static extern int AccessibleObjectFromPoint(POINT pt, [MarshalAs(UnmanagedType.IUnknown)] out object acc, [MarshalAs(UnmanagedType.Struct)] out object child);
 
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
         [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(POINT pt);
         [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
         [DllImport("user32.dll")] private static extern bool ScreenToClient(IntPtr hWnd, ref POINT pt);
@@ -467,26 +333,55 @@ namespace EdgeSaveAsCheck
         // Native mouse messages posted to the window: they reach Chromium as real input
         // (trusted events), unlike the simulated click of an accessibility action, and
         // they need neither focus nor the foreground window.
-        public static void PostClick(IntPtr hWnd, int x, int y)
+        // Returns false when Windows refused a message (for example Edge running elevated while
+        // this process is not: the input of a lower-integrity process is dropped).
+        public static bool PostClick(IntPtr hWnd, int x, int y)
         {
             IntPtr lp = MakeLParam(x, y);
-            PostMessage(hWnd, 0x0200, IntPtr.Zero, lp);          // WM_MOUSEMOVE
+            bool ok = PostMessage(hWnd, 0x0200, IntPtr.Zero, lp);          // WM_MOUSEMOVE
             System.Threading.Thread.Sleep(80);
-            PostMessage(hWnd, 0x0201, new IntPtr(1), lp);        // WM_LBUTTONDOWN, MK_LBUTTON
+            ok = PostMessage(hWnd, 0x0201, new IntPtr(1), lp) && ok;       // WM_LBUTTONDOWN, MK_LBUTTON
             System.Threading.Thread.Sleep(60);
-            PostMessage(hWnd, 0x0202, IntPtr.Zero, lp);          // WM_LBUTTONUP
+            ok = PostMessage(hWnd, 0x0202, IntPtr.Zero, lp) && ok;         // WM_LBUTTONUP
+            return ok;
         }
 
         // Native key press posted to the window (Enter activates the focused button).
-        public static void PostKey(IntPtr hWnd, int vk, int ch)
+        public static bool PostKey(IntPtr hWnd, int vk, int ch)
         {
             uint scan = MapVirtualKey((uint)vk, 0);
             uint down = 1u | (scan << 16);
             uint up = down | (1u << 30) | (1u << 31);
-            PostMessage(hWnd, 0x0100, new IntPtr(vk), new IntPtr(unchecked((int)down)));   // WM_KEYDOWN
-            PostMessage(hWnd, 0x0102, new IntPtr(ch), new IntPtr(unchecked((int)down)));   // WM_CHAR
+            bool ok = PostMessage(hWnd, 0x0100, new IntPtr(vk), new IntPtr(unchecked((int)down)));   // WM_KEYDOWN
+            ok = PostMessage(hWnd, 0x0102, new IntPtr(ch), new IntPtr(unchecked((int)down))) && ok;  // WM_CHAR
             System.Threading.Thread.Sleep(50);
-            PostMessage(hWnd, 0x0101, new IntPtr(vk), new IntPtr(unchecked((int)up)));     // WM_KEYUP
+            ok = PostMessage(hWnd, 0x0101, new IntPtr(vk), new IntPtr(unchecked((int)up))) && ok;    // WM_KEYUP
+            return ok;
+        }
+
+        public static IntPtr ForegroundWindow()
+        {
+            return GetForegroundWindow();
+        }
+
+        public static IntPtr OwnerOf(IntPtr hWnd)
+        {
+            return GetWindow(hWnd, GW_OWNER);
+        }
+
+        // True when the screen point lies inside the window rectangle.
+        public static bool WindowContains(IntPtr hWnd, int x, int y)
+        {
+            RECT r;
+            if (!GetWindowRect(hWnd, out r)) { return false; }
+            return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom;
+        }
+
+        public static string CursorText()
+        {
+            POINT p;
+            if (!GetCursorPos(out p)) { return "?"; }
+            return p.X.ToString() + "," + p.Y.ToString();
         }
 
         // Last resort, opt-in: a real mouse click. It moves the cursor, so it is not background.
@@ -533,23 +428,20 @@ namespace EdgeSaveAsCheck
 }
 
 function Get-EdgeProcessIds {
-    return @(Get-Process -Name msedge -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    return @(Get-Process -Name msedge -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId } | ForEach-Object { $_.Id })
 }
 
-# Fenêtres de navigateur Edge (y compris réduites).
 function Get-EdgeBrowserWindows {
     $edgePids = Get-EdgeProcessIds
     foreach ($window in [EdgeSaveAsCheck.Win32]::GetTopLevelWindows()) {
-        if ($window.ClassName -ne 'Chrome_WidgetWin_1' -or -not $window.Visible) { continue }
+        if ($window.ClassName -notlike 'Chrome_WidgetWin*' -or -not $window.Visible) { continue }
         if ($window.Owner -ne [IntPtr]::Zero -or [string]::IsNullOrEmpty($window.Title)) { continue }
         if ($edgePids -notcontains [int]$window.ProcessId) { continue }
         try { [System.Windows.Automation.AutomationElement]::FromHandle($window.Handle) } catch { }
     }
 }
 
-# =============================================================================
-# UI Automation
-# =============================================================================
 
 function New-ControlTypeCondition {
     param($ControlType)
@@ -582,16 +474,16 @@ function Get-ElementClass {
     try { return [string]$Element.Current.ClassName } catch { return '' }
 }
 
-# Vrai si la classe UI Automation de l'élément figure dans la liste (égalité exacte, sans
-# tenir compte de la casse). Les classes ne sont pas traduites : c'est le critère qui ne
-# dépend pas de la langue du navigateur.
 function Test-ClassMatch {
     param($Element, [string[]]$Classes)
     if (-not $Classes) { return $false }
     $class = Get-ElementClass $Element
     if (-not $class) { return $false }
+    $tokens = @($class -split '\s+' | Where-Object { $_ })
     foreach ($candidate in $Classes) {
-        if ($class -ieq $candidate) { return $true }
+        foreach ($token in $tokens) {
+            if ($token -ieq $candidate) { return $true }
+        }
     }
     return $false
 }
@@ -608,8 +500,6 @@ function Get-ElementValue {
     return $null
 }
 
-# Vrai si l'élément appartient au contenu d'une page web (sous un « Document »),
-# faux s'il appartient à l'interface du navigateur (barre d'outils, onglets).
 function Test-InWebContent {
     param($Element)
     $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
@@ -624,16 +514,14 @@ function Test-InWebContent {
     return $false
 }
 
-# Éléments correspondant à une classe UI Automation (critère principal, indépendant de la
-# langue) ou, à défaut, à un nom (repli, dépendant de la langue d'Edge). Ordre du résultat :
-# classe avant nom ; à critère égal, avec -PreferBrowserUi, interface d'Edge avant contenu web.
 function Find-NamedElements {
     param(
         [object[]]$Roots,
         $Condition,
         [string[]]$NamePatterns,
         [string[]]$Classes,
-        [switch]$PreferBrowserUi
+        [switch]$PreferBrowserUi,
+        [switch]$ExcludeWebContent
     )
     $buckets = @(
         (New-Object System.Collections.Generic.List[object]),
@@ -647,6 +535,7 @@ function Find-NamedElements {
         foreach ($element in $candidates) {
             $byClass = Test-ClassMatch $element $Classes
             if (-not $byClass -and -not (Test-LikeAny (Get-ElementName $element) $NamePatterns)) { continue }
+            if ($ExcludeWebContent -and (Test-InWebContent $element)) { continue }
             $index = 0
             if (-not $byClass) { $index += 2 }
             if ($PreferBrowserUi -and (Test-InWebContent $element)) { $index += 1 }
@@ -658,11 +547,6 @@ function Find-NamedElements {
     return $result.ToArray()
 }
 
-# Actionne l'élément. Selon la version d'Edge, le même bouton n'expose pas les mêmes
-# actions, et Expand peut renvoyer E_FAIL (notamment sur un bouton désactivé) ; on essaie
-# donc chaque action disponible dans son propre try/catch, jusqu'à la première qui aboutit.
-# Tout reste en UI Automation managé (pas de type COM comme LegacyIAccessiblePattern, absent
-# de l'assembly .NET utilisé par Windows PowerShell 5.1).
 function Invoke-UiaElement {
     param($Element)
     $attempts = @(
@@ -677,7 +561,6 @@ function Invoke-UiaElement {
         try { & $attempt.Action $pattern; return $attempt.Name }
         catch {
             $lastError = $_
-            # Expand renvoie parfois E_FAIL tout en ayant ouvert le panneau : on vérifie l'état.
             if ($attempt.Name -eq 'Expand') {
                 try {
                     if ($pattern.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded) { return 'Expand' }
@@ -687,9 +570,6 @@ function Invoke-UiaElement {
             Write-Log ("Action '{0}' en echec, essai suivant : {1}" -f $attempt.Name, $_.Exception.Message) 'WARN'
         }
     }
-    # Dernier recours : action par défaut via l'accessibilité (MSAA) au centre de l'élément.
-    # Certaines versions d'Edge n'exposent qu'Expand sur le bouton Telechargements, et Expand
-    # renvoie E_FAIL ; accDoDefaultAction clique le bouton sans bouger la souris.
     try { return (Invoke-DefaultActionAtPoint $Element) }
     catch {
         $detail = if ($lastError) { $lastError.Exception.Message } else { 'aucun pattern utilisable' }
@@ -697,11 +577,21 @@ function Invoke-UiaElement {
     }
 }
 
-# Clique l'élément via son action par défaut MSAA, sans déplacer le curseur. On vise le point
-# cliquable calculé par UI Automation (ou, à défaut, le centre du rectangle de l'élément).
+function Assert-PointOnEdge {
+    param($Point)
+    $near = [EdgeSaveAsCheck.Win32]::WindowAt($Point.X, $Point.Y)
+    if ($near -eq [IntPtr]::Zero) { return }
+    $owner = [int][EdgeSaveAsCheck.Win32]::ProcessOf($near)
+    if (@(Get-EdgeProcessIds) -notcontains $owner) {
+        $other = Get-Process -Id $owner -ErrorAction SilentlyContinue
+        throw ("le point {0},{1} est recouvert par '{2}' : aucune action envoyee" -f $Point.X, $Point.Y, $other.ProcessName)
+    }
+}
+
 function Invoke-DefaultActionAtPoint {
     param($Element)
     $point = Get-ElementScreenPoint $Element
+    Assert-PointOnEdge $point
     $pt = New-Object EdgeSaveAsCheck.POINT
     $pt.X = $point.X; $pt.Y = $point.Y
     $acc = $null; $child = $null
@@ -711,8 +601,6 @@ function Invoke-DefaultActionAtPoint {
     return 'accDoDefaultAction'
 }
 
-# Point d'écran (pixels physiques, le processus étant DPI aware) où cliquer l'élément :
-# point cliquable d'UI Automation, ou à défaut centre de son rectangle.
 function Get-ElementScreenPoint {
     param($Element)
     try {
@@ -728,8 +616,6 @@ function Get-ElementScreenPoint {
     }
 }
 
-# Fenêtre native qui porte l'élément : l'ancêtre UI Automation le plus proche (lui compris)
-# doté d'un handle de fenêtre. Ne dépend pas de l'ordre d'empilement des fenêtres.
 function Get-ElementWindow {
     param($Element)
     $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
@@ -745,11 +631,33 @@ function Get-ElementWindow {
     return [IntPtr]::Zero
 }
 
-# Détermine à quelle fenêtre poster un message d'entrée pour l'élément. On vise la fenêtre
-# visible sous le point (celle qui a fonctionné lors des essais) à condition qu'elle appartienne
-# à Edge. Si une autre application recouvre Edge à cet endroit, cette fenêtre-là n'est pas la
-# bonne : on prend celle de l'arbre UI Automation de l'élément, indépendante de l'ordre des
-# fenêtres. Aucun message n'est jamais posté à une fenêtre qui n'est pas celle d'Edge.
+function Find-PanelWindowAt {
+    param($Point)
+    if ($script:PageHandle -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    foreach ($window in [EdgeSaveAsCheck.Win32]::GetTopLevelWindows()) {
+        if (-not $window.Visible -or $window.Owner -ne $script:PageHandle -or $window.ClassName -notlike 'Chrome_WidgetWin*') { continue }
+        if ([EdgeSaveAsCheck.Win32]::WindowContains($window.Handle, $Point.X, $Point.Y)) { return $window.Handle }
+    }
+    return [IntPtr]::Zero
+}
+
+function Get-WindowVerification {
+    param([IntPtr]$Top, $Element)
+    $checks = New-Object System.Collections.Generic.List[string]
+    if ($script:PageHandle -ne [IntPtr]::Zero) {
+        if ($Top -eq $script:PageHandle) { $checks.Add('fenetre de la page') }
+        elseif ([EdgeSaveAsCheck.Win32]::OwnerOf($Top) -eq $script:PageHandle) { $checks.Add('popup possede par la page') }
+    }
+    $uia = Get-ElementWindow $Element
+    if ($uia -ne [IntPtr]::Zero) {
+        $uiaTop = [EdgeSaveAsCheck.Win32]::RootOf($uia)
+        if ($uiaTop -eq [IntPtr]::Zero) { $uiaTop = $uia }
+        if ($uiaTop -eq $Top) { $checks.Add('meme fenetre que l arbre UI Automation') }
+    }
+    if ($checks.Count -eq 0) { return 'NON VERIFIEE (ni fenetre de la page, ni popup possede par elle, ni arbre UI Automation)' }
+    return ($checks -join ' + ')
+}
+
 function Resolve-ClickWindows {
     param($Element)
     $point = Get-ElementScreenPoint $Element
@@ -760,37 +668,43 @@ function Resolve-ClickWindows {
         $owner = [int][EdgeSaveAsCheck.Win32]::ProcessOf($near)
         if ($edgePids -notcontains $owner) {
             $other = Get-Process -Id $owner -ErrorAction SilentlyContinue
-            Write-Log ("Edge est recouvert par '{0}' a cet endroit : cible prise dans l'arbre UI Automation (aucun message envoye a cette application)" -f $other.ProcessName) 'WARN'
+            Write-Log ("Edge est recouvert par '{0}' a cet endroit : cible cherchee sans dependre de l'ordre des fenetres (aucun message envoye a cette application)" -f $other.ProcessName) 'WARN'
             $near = [IntPtr]::Zero
         }
     }
     if ($near -eq [IntPtr]::Zero) {
-        $near = Get-ElementWindow $Element
-        $source = 'arbre UI Automation'
-        if ($near -ne [IntPtr]::Zero -and ($edgePids -notcontains [int][EdgeSaveAsCheck.Win32]::ProcessOf($near))) { $near = [IntPtr]::Zero }
+        $near = Find-PanelWindowAt $point
+        $source = 'popup d Edge possede par la page'
+        if ($near -eq [IntPtr]::Zero) {
+            $near = Get-ElementWindow $Element
+            $source = 'arbre UI Automation'
+            if ($near -ne [IntPtr]::Zero) {
+                if ($edgePids -notcontains [int][EdgeSaveAsCheck.Win32]::ProcessOf($near)) { $near = [IntPtr]::Zero }
+                elseif ($script:PageHandle -ne [IntPtr]::Zero -and [EdgeSaveAsCheck.Win32]::RootOf($near) -eq $script:PageHandle) {
+                    throw "la fenetre trouvee par l'arbre UI Automation est celle de la page elle-meme, pas celle du panneau : aucun message envoye pour ne pas cliquer la page"
+                }
+            }
+        }
     }
     if ($near -eq [IntPtr]::Zero) { throw ('aucune fenetre d Edge atteignable pour le point {0},{1}' -f $point.X, $point.Y) }
     $top = [EdgeSaveAsCheck.Win32]::RootOf($near)
     if ($top -eq [IntPtr]::Zero) { $top = $near }
-    return [pscustomobject]@{ Point = $point; Near = $near; Top = $top; Source = $source }
+    return [pscustomobject]@{ Point = $point; Near = $near; Top = $top; Source = $source; Verification = (Get-WindowVerification -Top $top -Element $Element) }
 }
 
-# Clic « natif » posté à la fenêtre qui porte l'élément. -Target Root : fenêtre de premier
-# niveau (le panneau Téléchargements est une fenêtre contextuelle propre) ; Child : fenêtre
-# enfant qui affiche la page web. Renvoie $null si Child est identique à Root (déjà essayé).
 function Send-NativeClick {
     param($Element, [ValidateSet('Root', 'Child')][string]$Target)
     $w = Resolve-ClickWindows $Element
     if ($Target -eq 'Child' -and $w.Near -eq $w.Top) { return $null }
     $hwnd = if ($Target -eq 'Root') { $w.Top } else { $w.Near }
     $client = [EdgeSaveAsCheck.Win32]::ToClient($hwnd, $w.Point.X, $w.Point.Y)
-    Write-Log ("Clic natif ({0}) : ecran {1},{2} -> fenetre 0x{3:X} classe '{4}' DPI {5}, client {6},{7} (cible : {8})" -f $Target, $w.Point.X, $w.Point.Y, $hwnd.ToInt64(), [EdgeSaveAsCheck.Win32]::ClassOf($hwnd), [EdgeSaveAsCheck.Win32]::DpiOf($hwnd), $client.X, $client.Y, $w.Source)
-    [EdgeSaveAsCheck.Win32]::PostClick($hwnd, $client.X, $client.Y)
+    Write-Log ("Clic natif ({0}) : ecran {1},{2} -> fenetre 0x{3:X} classe '{4}' proprietaire 0x{5:X} DPI {6}, client {7},{8} (cible : {9} ; verification : {10})" -f $Target, $w.Point.X, $w.Point.Y, $hwnd.ToInt64(), [EdgeSaveAsCheck.Win32]::ClassOf($hwnd), [EdgeSaveAsCheck.Win32]::OwnerOf($hwnd).ToInt64(), [EdgeSaveAsCheck.Win32]::DpiOf($hwnd), $client.X, $client.Y, $w.Source, $w.Verification)
+    if (-not [EdgeSaveAsCheck.Win32]::PostClick($hwnd, $client.X, $client.Y)) {
+        throw "Windows a refuse le message souris (Edge lance avec des droits eleves alors que ce script ne l'est pas ?)"
+    }
     return ('message souris poste a la fenetre ' + $Target.ToLower())
 }
 
-# Touche Entrée postée à la fenêtre du panneau. Elle active le bouton qui a le focus : on ne
-# l'envoie donc que si c'est bien « Enregistrer sous » (sinon elle pourrait ouvrir le fichier).
 function Send-NativeEnter {
     param($Element)
     $focused = $false
@@ -800,12 +714,12 @@ function Send-NativeEnter {
         return $null
     }
     $w = Resolve-ClickWindows $Element
-    [EdgeSaveAsCheck.Win32]::PostKey($w.Top, 0x0D, 13)
+    if (-not [EdgeSaveAsCheck.Win32]::PostKey($w.Top, 0x0D, 13)) {
+        throw "Windows a refuse la touche Entree (Edge lance avec des droits eleves alors que ce script ne l'est pas ?)"
+    }
     return 'touche Entree postee a la fenetre'
 }
 
-# Un essai de clic, par ordre de discrétion croissante ; renvoie une description de ce qui
-# a été fait, ou $null si la méthode ne s'applique pas.
 function Invoke-SaveAsClick {
     param([string]$Method, $Element)
     switch ($Method) {
@@ -816,6 +730,7 @@ function Invoke-SaveAsClick {
         'Keyboard' { return (Send-NativeEnter $Element) }
         'RealMouse' {
             $point = Get-ElementScreenPoint $Element
+            Assert-PointOnEdge $point
             [EdgeSaveAsCheck.Win32]::RealClick($point.X, $point.Y)
             return 'vrai clic souris (curseur deplace)'
         }
@@ -823,8 +738,6 @@ function Invoke-SaveAsClick {
     }
 }
 
-# Propriétés de l'élément et de ses parents : montre s'il s'agit d'un bouton de page web
-# (panneau WebUI) et quelles actions UI Automation il propose.
 function Write-ElementDiagnostic {
     param($Element, [string]$Label)
     try {
@@ -845,33 +758,39 @@ function Write-ElementDiagnostic {
     catch { Write-Log ("{0} : diagnostic impossible ({1})" -f $Label, $_.Exception.Message) 'WARN' }
 }
 
-# =============================================================================
-# Étape 1 : page Edge cible (URL + titre)
-# =============================================================================
 
 function Test-UrlMatch {
     param([string]$Url)
+    $Url = Remove-InvisibleMarks $Url
     if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
-    if ($Url -like $UrlPattern) { return $true }
-    # Edge peut masquer « https:// » et « www. » : on compare aussi sans ce préfixe.
+    if (Test-PatternMatch $Url $UrlPattern) { return $true }
     $prefix = '^[a-zA-Z][a-zA-Z0-9+.-]*://(www\.)?'
-    return (($Url -replace $prefix, '') -like ($UrlPattern -replace $prefix, ''))
+    return (Test-PatternMatch ($Url -replace $prefix, '') ($UrlPattern -replace $prefix, ''))
 }
 
 function Get-AddressBarValue {
     param($Window)
     try { $edits = $Window.FindAll($script:Descendants, $script:CondEdit) } catch { return $null }
-    # Par ordre de fiabilité : classe de la barre d'adresse (indépendante de la langue), puis
-    # nom (français ou anglais), puis 1er champ de saisie de l'interface d'Edge (hors page web).
+    $byClass = $null
     $byName = $null
     $fallback = $null
     foreach ($edit in $edits) {
-        if (Test-ClassMatch $edit $AddressBarClasses) { return Get-ElementValue $edit }
+        if (Test-ClassMatch $edit $AddressBarClasses) { $byClass = $edit; break }
         if (-not $byName -and (Test-LikeAny (Get-ElementName $edit) $AddressBarNames)) { $byName = $edit }
         if (-not $fallback -and -not (Test-InWebContent $edit)) { $fallback = $edit }
     }
-    if ($byName) { return Get-ElementValue $byName }
-    if ($fallback) { return Get-ElementValue $fallback }
+    $chosen = $null
+    $how = ''
+    if ($byClass) { $chosen = $byClass; $how = 'classe' }
+    elseif ($byName) { $chosen = $byName; $how = 'nom (repli)' }
+    elseif ($fallback) { $chosen = $fallback; $how = 'premier champ de saisie hors page web (repli)' }
+    if ($chosen) {
+        if (-not $script:AddressBarHow) {
+            $script:AddressBarHow = $how
+            Write-Log ('Barre d adresse identifiee par : {0}' -f $how)
+        }
+        return Get-ElementValue $chosen
+    }
     return $null
 }
 
@@ -915,29 +834,27 @@ function New-PageResult {
 function Find-TargetEdgePage {
     param([switch]$LogDetails)
     foreach ($window in @(Get-EdgeBrowserWindows)) {
-        $windowName = Get-ElementName $window
+        $windowName = Remove-InvisibleMarks (Get-ElementName $window)
 
-        # 1) Onglet actif : le titre de la fenêtre commence par le titre de la page.
-        $url = Get-AddressBarValue $window
+        $url = Remove-InvisibleMarks (Get-AddressBarValue $window)
         if ($LogDetails) { Write-Log ("Fenetre Edge : '{0}' | URL de l'onglet actif : '{1}'" -f $windowName, $url) }
-        if ($windowName -like "$TitlePattern*" -and (Test-UrlMatch $url)) {
+        if ((Test-PatternMatch $windowName ($TitlePattern + '*')) -and (Test-UrlMatch $url)) {
             return New-PageResult -Window $window -Title $windowName -Url $url
         }
 
-        # 2) Onglets inactifs dont le titre correspond : on les active un par un pour lire l'URL.
         $allTabs = @()
         try { $allTabs = @($window.FindAll($script:Descendants, $script:CondTabItem)) } catch { }
         $candidates = @($allTabs | Where-Object {
-                (Get-ElementName $_) -like "$TitlePattern*" -and -not (Test-TabSelected $_) -and -not (Test-InWebContent $_)
+                (Test-PatternMatch (Remove-InvisibleMarks (Get-ElementName $_)) ($TitlePattern + '*')) -and -not (Test-TabSelected $_) -and -not (Test-InWebContent $_)
             })
         if ($candidates.Count -eq 0) { continue }
 
         $initialTab = $allTabs | Where-Object { (Test-TabSelected $_) -and -not (Test-InWebContent $_) } | Select-Object -First 1
         foreach ($tab in $candidates) {
-            $tabName = Get-ElementName $tab
+            $tabName = Remove-InvisibleMarks (Get-ElementName $tab)
             if (-not (Select-Tab $tab)) { continue }
             Start-Sleep -Milliseconds 500
-            $url = Get-AddressBarValue $window
+            $url = Remove-InvisibleMarks (Get-AddressBarValue $window)
             Write-Log ("  Onglet '{0}' active | URL : '{1}'" -f $tabName, $url)
             if (Test-UrlMatch $url) {
                 return New-PageResult -Window $window -Title $tabName -Url $url
@@ -951,12 +868,7 @@ function Find-TargetEdgePage {
     return $null
 }
 
-# =============================================================================
-# Étapes 2-3 : panneau Téléchargements et bouton « Enregistrer sous »
-# =============================================================================
 
-# Le panneau peut être exposé dans l'arbre de la fenêtre Edge ou comme fenêtre
-# contextuelle séparée appartenant à celle-ci : on cherche dans les deux.
 function Get-PanelSearchRoots {
     param($Page)
     $roots = New-Object System.Collections.Generic.List[object]
@@ -968,8 +880,6 @@ function Get-PanelSearchRoots {
     return $roots.ToArray()
 }
 
-# Remonte depuis le bouton jusqu'à l'élément de téléchargement et renvoie le texte
-# correspondant à -FileNamePattern (ex. « Que voulez-vous faire avec Instruments (7).xlsx ? »).
 function Get-PromptTextForButton {
     param($Button)
     $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
@@ -979,12 +889,11 @@ function Get-PromptTextForButton {
             $node = $walker.GetParent($node)
             if (-not $node) { return $null }
             $names = @(Get-ElementName $node) + @($node.FindAll($script:Descendants, $script:CondAll) | ForEach-Object { Get-ElementName $_ })
+            $saveAsButtons = @($node.FindAll($script:Descendants, $script:CondClickable) | Where-Object {
+                    (Test-ClassMatch $_ $SaveAsButtonClasses) -or (Test-LikeAny (Get-ElementName $_) $SaveAsButtonNames)
+                })
         }
         catch { return $null }
-        # Conteneur commun à plusieurs invites : on est sorti de l'élément de ce bouton.
-        $saveAsButtons = @($node.FindAll($script:Descendants, $script:CondClickable) | Where-Object {
-                (Test-ClassMatch $_ $SaveAsButtonClasses) -or (Test-LikeAny (Get-ElementName $_) $SaveAsButtonNames)
-            })
         if ($saveAsButtons.Count -gt 1) { return $null }
         $match = $names | Where-Object { $_ -like "*$FileNamePattern*" } | Select-Object -First 1
         if ($match) { return $match }
@@ -992,10 +901,33 @@ function Get-PromptTextForButton {
     return $null
 }
 
+function Get-DocumentAncestorName {
+    param($Element)
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    $node = $Element
+    for ($depth = 0; $depth -lt 40 -and $node; $depth++) {
+        try {
+            if ($node.Current.ControlType -eq [System.Windows.Automation.ControlType]::Document) { return (Get-ElementName $node) }
+            $node = $walker.GetParent($node)
+        }
+        catch { return $null }
+    }
+    return $null
+}
+
+function Test-InTargetPage {
+    param($Element)
+    if (-not (($TitlePattern -replace '[\*\?]', '').Trim())) { return $false }
+    $documentName = Get-DocumentAncestorName $Element
+    if ($null -eq $documentName) { return $false }
+    return (Test-PatternMatch (Remove-InvisibleMarks $documentName) ($TitlePattern + '*'))
+}
+
 function Find-SaveAsButton {
     param($Page)
     $buttons = @(Find-NamedElements -Roots (Get-PanelSearchRoots $Page) -Condition $script:CondClickable -NamePatterns $SaveAsButtonNames -Classes $SaveAsButtonClasses)
     foreach ($button in $buttons) {
+        if (Test-InTargetPage $button) { continue }
         if ($FileNamePattern -eq '*') { return [pscustomobject]@{ Element = $button; PromptText = $null } }
         $text = Get-PromptTextForButton $button
         if ($text) { return [pscustomobject]@{ Element = $button; PromptText = $text } }
@@ -1016,7 +948,7 @@ function Wait-SaveAsButton {
 
 function Open-DownloadsPanel {
     param($Page)
-    $buttons = @(Find-NamedElements -Roots @($Page.Window) -Condition $script:CondClickable -NamePatterns $DownloadsButtonNames -Classes $DownloadsButtonClasses -PreferBrowserUi)
+    $buttons = @(Find-NamedElements -Roots @($Page.Window) -Condition $script:CondClickable -NamePatterns $DownloadsButtonNames -Classes $DownloadsButtonClasses -ExcludeWebContent)
     if ($buttons.Count -eq 0) { return $false }
     $identifiedBy = if (Test-ClassMatch $buttons[0] $DownloadsButtonClasses) { 'sa classe (independant de la langue)' } else { 'son nom (depend de la langue)' }
     Write-Log ('Bouton Telechargements identifie par {0}' -f $identifiedBy)
@@ -1026,7 +958,6 @@ function Open-DownloadsPanel {
     return $true
 }
 
-# Liste ce qu'UI Automation voit, pour ajuster les libellés si Edge les nomme autrement.
 function Write-UiaDiagnostic {
     param($Page)
     $roots = Get-PanelSearchRoots $Page
@@ -1039,22 +970,13 @@ function Write-UiaDiagnostic {
     }
 }
 
-# =============================================================================
-# Étape 4 : fenêtre Windows « Enregistrer sous »
-# =============================================================================
 
-# Instantané des fenêtres de premier niveau (clé = handle), pris avant le clic.
 function Get-WindowSnapshot {
     $snapshot = @{}
     foreach ($window in [EdgeSaveAsCheck.Win32]::GetTopLevelWindows()) { $snapshot[[int64]$window.Handle] = $true }
     return $snapshot
 }
 
-# Attend une NOUVELLE fenêtre (absente de l'instantané) qui est la boîte « Enregistrer sous ».
-# Reconnue sans dépendre de la langue : boîte de dialogue Windows (classe #32770) issue d'Edge.
-# Le titre (-SaveDialogTitles) sert d'appoint : avec lui, une fenêtre d'une autre classe issue
-# d'Edge, ou une boîte #32770 hors du processus Edge (WARN), est aussi acceptée. Toute autre
-# nouvelle fenêtre visible est journalisée (classe, titre, processus).
 function Wait-SaveDialog {
     param([IntPtr]$OwnerHandle, [hashtable]$Known, [hashtable]$Reported, [int]$Seconds)
     $deadline = (Get-Date).AddSeconds($Seconds)
@@ -1081,19 +1003,21 @@ function Wait-SaveDialog {
     return $null
 }
 
-# Le panneau Téléchargements d'Edge est une page web (WebUI) : l'action UI Automation
-# « Invoke » peut donner le focus au bouton sans déclencher son action. On essaie donc
-# plusieurs méthodes, en s'arrêtant dès qu'une fenêtre « Enregistrer sous » apparaît. Aucune
-# ne déplace la souris, sauf RealMouse (désactivée par défaut, voir -AllowRealMouse).
-# Renvoie la fenêtre trouvée (ou $null) et les méthodes essayées.
 function Invoke-SaveAsClickLadder {
     param($Page, $SaveAs)
     $known = Get-WindowSnapshot
     $reported = @{}
+    $edgePids = @(Get-EdgeProcessIds)
+    foreach ($window in [EdgeSaveAsCheck.Win32]::GetTopLevelWindows()) {
+        if ($window.Visible -and $window.ClassName -eq '#32770' -and (($edgePids -contains [int]$window.ProcessId) -or $window.Owner -eq $Page.Handle)) {
+            Write-Log ("Une boite de dialogue Windows issue d'Edge est deja ouverte ('{0}') : resultat d'un essai precedent ? Elle bloque Edge et fausse cette verification" -f $window.Title) 'WARN'
+        }
+    }
     Write-ElementDiagnostic -Element $SaveAs.Element -Label 'Bouton Enregistrer sous'
-    # Ordre : le clic natif sur la fenêtre du panneau a fonctionné sur Edge 26100 (les actions
-    # UI Automation ne donnent que le focus), il passe donc en premier ; les autres suivent.
-    $methods = @('MouseRoot', 'Invoke', 'accDoDefaultAction', 'MouseChild', 'Keyboard')
+    if (Wait-ElementStable -Element $SaveAs.Element) { Write-Log 'Bouton stable : position lue deux fois identique' }
+    else { Write-Log "Bouton non stabilise apres 1,5 s : clic tente quand meme" 'WARN' }
+    Write-Log ('Etat avant le clic : {0}' -f (Get-StateText))
+    $methods = @('MouseRoot', 'Invoke', 'accDoDefaultAction', 'MouseRoot', 'MouseChild', 'Keyboard')
     if ($AllowRealMouse) { $methods += 'RealMouse' }
     $dialog = $null
     $tried = New-Object System.Collections.Generic.List[string]
@@ -1114,7 +1038,6 @@ function Invoke-SaveAsClickLadder {
             Write-Log ("Fenetre obtenue avec la methode '{0}'" -f $method) 'OK'
             break
         }
-        # Bouton disparu : le clic a eu un effet (fenêtre lente ?). Ne pas cliquer une 2e fois.
         $again = Find-SaveAsButton -Page $Page
         if (-not $again) {
             Write-Log ("Le bouton Enregistrer sous a disparu apres la methode '{0}' : attente de la fenetre sans autre clic" -f $method) 'WARN'
@@ -1126,7 +1049,39 @@ function Invoke-SaveAsClickLadder {
     if (-not $dialog) {
         $dialog = Wait-SaveDialog -OwnerHandle $Page.Handle -Known $known -Reported $reported -Seconds $DialogTimeoutSeconds
     }
+    Write-Log ('Etat apres le clic : {0}' -f (Get-StateText))
     return [pscustomobject]@{ Dialog = $dialog; Tried = @($tried) }
+}
+
+function Wait-ElementStable {
+    param($Element, [int]$PollMilliseconds = 150, [int]$MaxMilliseconds = 1500)
+    $deadline = (Get-Date).AddMilliseconds($MaxMilliseconds)
+    $previous = $null
+    do {
+        try {
+            $rect = $Element.Current.BoundingRectangle
+            if ($null -eq $rect) { return $false }
+            $current = '{0:N0},{1:N0},{2:N0},{3:N0}' -f $rect.X, $rect.Y, $rect.Width, $rect.Height
+        }
+        catch { return $false }
+        if ($current -eq $previous) { return $true }
+        $previous = $current
+        Start-Sleep -Milliseconds $PollMilliseconds
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
+function Get-StateText {
+    try {
+        $foreground = [EdgeSaveAsCheck.Win32]::ForegroundWindow()
+        $text = 'aucune'
+        if ($foreground -ne [IntPtr]::Zero) {
+            $process = Get-Process -Id ([int][EdgeSaveAsCheck.Win32]::ProcessOf($foreground)) -ErrorAction SilentlyContinue
+            $text = "classe '{0}' processus '{1}'" -f [EdgeSaveAsCheck.Win32]::ClassOf($foreground), $process.ProcessName
+        }
+        return ('fenetre au premier plan : {0} ; curseur : {1}' -f $text, [EdgeSaveAsCheck.Win32]::CursorText())
+    }
+    catch { return 'etat indisponible' }
 }
 
 function Get-DialogFileName {
@@ -1145,22 +1100,15 @@ function Get-DialogFileName {
 
 function Close-SaveDialog {
     param([IntPtr]$Handle)
-    # WM_CLOSE = « Annuler » : aucun fichier n'est enregistré.
     [void][EdgeSaveAsCheck.Win32]::PostMessage($Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
     $deadline = (Get-Date).AddSeconds(5)
     while ([EdgeSaveAsCheck.Win32]::IsWindow($Handle) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
     return -not [EdgeSaveAsCheck.Win32]::IsWindow($Handle)
 }
 
-# =============================================================================
-# Traitement principal
-# =============================================================================
 
 function Invoke-EdgeSaveAsCheck {
     Initialize-Win32
-    # Avant tout appel UI Automation : coordonnées en pixels physiques, cohérentes avec celles
-    # des fenêtres d'Edge (sinon un écran avec mise à l'échelle décale les clics postés).
-    # Étape facultative : un échec ici ne doit jamais interrompre la vérification.
     $dpiMode = 'indisponible'
     try { $dpiMode = [EdgeSaveAsCheck.Win32]::EnableDpiAwareness() }
     catch { $dpiMode = 'indisponible : ' + $_.Exception.Message }
@@ -1171,8 +1119,6 @@ function Invoke-EdgeSaveAsCheck {
         Stop-Check 2 "Microsoft Edge n'est pas lance (aucun processus msedge)."
     }
 
-    # --- 1. Page cible ---------------------------------------------------------
-    # Plusieurs passes : au premier accès, Edge construit son arbre d'accessibilité.
     $page = $null
     for ($attempt = 1; $attempt -le 3 -and -not $page; $attempt++) {
         if ($attempt -gt 1) { Start-Sleep -Milliseconds 1500 }
@@ -1182,18 +1128,15 @@ function Invoke-EdgeSaveAsCheck {
         Stop-Check 3 ("Aucune page Edge ne correspond a URL='{0}' et Titre='{1}' (voir les fenetres listees ci-dessus)." -f $UrlPattern, $TitlePattern)
     }
     Write-Log ("Page cible : '{0}' | {1} | HWND 0x{2:X}" -f $page.Title, $page.Url, $page.Handle.ToInt64()) 'OK'
+    $script:PageHandle = $page.Handle
 
-    # Une fenêtre réduite ne peut pas afficher le panneau : restauration SANS activation.
     if ([EdgeSaveAsCheck.Win32]::IsIconic($page.Handle)) {
-        [void][EdgeSaveAsCheck.Win32]::ShowWindow($page.Handle, 4)   # SW_SHOWNOACTIVATE
+        [void][EdgeSaveAsCheck.Win32]::ShowWindow($page.Handle, 4)
         $script:MinimizedHandle = $page.Handle
         Start-Sleep -Milliseconds 700
         Write-Log 'Fenetre Edge reduite : restauree sans prendre le focus'
     }
 
-    # --- 2. Panneau Téléchargements ---------------------------------------------
-    # Edge ouvre souvent le panneau tout seul au début du téléchargement : on vérifie
-    # d'abord, car actionner le bouton refermerait un panneau déjà ouvert.
     $saveAs = Wait-SaveAsButton -Page $page -Seconds 2
     if ($saveAs) {
         Write-Log 'Panneau Telechargements deja ouvert sur une invite de telechargement'
@@ -1212,17 +1155,21 @@ function Invoke-EdgeSaveAsCheck {
     }
     if ($saveAs.PromptText) { Write-Log ("Invite de telechargement : '{0}'" -f $saveAs.PromptText) }
 
-    # --- 3. Clic « Enregistrer sous » + 4. Vérification de la fenêtre Windows ------
     $result = Invoke-SaveAsClickLadder -Page $page -SaveAs $saveAs
     $dialog = $result.Dialog
     if (-not $dialog) {
         Stop-Check 6 ("La fenetre Windows d'enregistrement ne s'est pas ouverte (methodes essayees : {0}). Voir les lignes du journal sur le bouton et les nouvelles fenetres." -f ($result.Tried -join ', '))
     }
-    Write-Log ("Fenetre Windows detectee : '{0}' (classe {1}, HWND 0x{2:X}, PID {3})" -f $dialog.Title, $dialog.ClassName, $dialog.Handle.ToInt64(), $dialog.ProcessId) 'OK'
+    $dialogFromEdge = (@(Get-EdgeProcessIds) -contains [int]$dialog.ProcessId) -or ($dialog.Owner -eq $page.Handle)
+    Write-Log ("Fenetre Windows detectee : '{0}' (classe {1}, HWND 0x{2:X}, PID {3}, issue d'Edge : {4}, proprietaire 0x{5:X})" -f $dialog.Title, $dialog.ClassName, $dialog.Handle.ToInt64(), $dialog.ProcessId, $dialogFromEdge, $dialog.Owner.ToInt64()) 'OK'
     $fileName = Get-DialogFileName $dialog.Handle
     if ($fileName) { Write-Log ("Nom de fichier propose : '{0}'" -f $fileName) }
 
-    if ($CloseDialog) {
+    if ($CloseDialog -and -not $dialogFromEdge) {
+        Write-Log "Fenetre non fermee : elle n'appartient pas a Edge (boite d'une autre application ?)" 'WARN'
+        $script:DialogLeftOpen = $true
+    }
+    elseif ($CloseDialog) {
         if (Close-SaveDialog $dialog.Handle) { Write-Log 'Fenetre fermee (Annuler : aucun fichier enregistre)' }
         else { Write-Log 'La fenetre ne s est pas fermee dans les 5 s' 'WARN'; $script:DialogLeftOpen = $true }
     }
@@ -1232,17 +1179,13 @@ function Invoke-EdgeSaveAsCheck {
     $script:ResultText = "fenetre '$($dialog.Title)' ouverte"
 }
 
-# =============================================================================
-# Point d'entrée : un seul try/catch/finally, journal garanti
-# =============================================================================
 
 try {
     $script:LogFile = Initialize-Log -Path $LogPath
     Write-Log ('Demarrage - PID {0}, PowerShell {1}, utilisateur {2}, journal : {3}' -f $PID, $PSVersionTable.PSVersion, $env:USERNAME, $script:LogFile)
 
-    # Valeurs venant de PAD : espaces ou retours à la ligne parasites, variable vide.
-    $UrlPattern = $UrlPattern.Trim()
-    $TitlePattern = $TitlePattern.Trim()
+    $UrlPattern = (Remove-InvisibleMarks $UrlPattern).Trim()
+    $TitlePattern = (Remove-InvisibleMarks $TitlePattern).Trim()
     $FileNamePattern = $FileNamePattern.Trim()
     if (-not $FileNamePattern) { $FileNamePattern = '*' }
     Write-Log ("Parametres - URL '{0}' | Titre '{1}' | Fichier '{2}' | CloseDialog {3}" -f $UrlPattern, $TitlePattern, $FileNamePattern, [bool]$CloseDialog)
@@ -1267,9 +1210,8 @@ catch {
     if ($script:QuietConsole) { [Console]::Error.WriteLine($_.Exception.Message) }
 }
 finally {
-    # Fenêtre Edge réduite au départ : on la réduit à nouveau, sauf si le dialogue reste ouvert.
     if ($script:MinimizedHandle -ne [IntPtr]::Zero -and -not $script:DialogLeftOpen) {
-        try { [void][EdgeSaveAsCheck.Win32]::ShowWindow($script:MinimizedHandle, 7) } catch { }   # SW_SHOWMINNOACTIVE
+        try { [void][EdgeSaveAsCheck.Win32]::ShowWindow($script:MinimizedHandle, 7) } catch { }
     }
     $elapsed = ((Get-Date) - $script:StartTime).TotalSeconds
     $level = if ($script:ExitCode -eq 0) { 'OK' } else { 'ERREUR' }
